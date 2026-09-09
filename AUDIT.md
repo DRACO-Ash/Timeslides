@@ -57,6 +57,27 @@ Three things the App Store must provide. The first two are hard.
 | Writes only to the volume | Code tree read-only | Ran with the tree owned by root and mode `a-w`; group and report writes landed on the volume owned 1000:1000 |
 | No `ENV PORT=` | Absent from the Dockerfile by design | Read with a default instead |
 
+## Container build: not verified in this session
+
+**The image was not built.** Docker is available here but this session's egress
+policy denies Docker Hub's blob content delivery network
+(`production.cloudfront.docker.com` answers 403 to the manifest and layer
+fetches, while `auth.docker.io` and `registry-1.docker.io` respond normally).
+The `python:3.11-slim-bookworm` base image therefore cannot be pulled, and per
+the proxy guidance a policy denial is reported rather than routed around.
+
+What that leaves unverified: the `containerize` and `container-scan` stages,
+which is to say the flatten actually collapsing to one layer, the setuid strip
+assertion firing, and the image passing the policy scan. The Dockerfile parses
+(BuildKit loaded the build definition before failing on the pull) and every
+runtime property the image is meant to deliver is verified separately by the
+runtime contract check below, run as uid 1000 against the same entry point.
+
+**Do this before the first upload:** build the image on a host with registry
+access and confirm the prep stage's setuid assertion passes, the final image
+reports `USER 1000:1000`, and `docker history` shows a single layer above
+scratch.
+
 ## Container image policy
 
 The image is flattened. A `chmod -s` in a later layer does not remove a bit an

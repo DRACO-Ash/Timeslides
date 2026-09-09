@@ -45,7 +45,7 @@ COPY timeslides ./timeslides
 
 # The mount point exists in the image with the right ownership so a volume
 # attached over it is writable by uid 1000 even before fsGroup applies.
-RUN install -d -o 1000 -g 1000 -m 0770 /data /app/runs
+RUN install -d -o 1000 -g 1000 -m 0770 /data
 
 # Strip every setuid and setgid bit and every capability-bearing binary the
 # base image ships. The policy rejects an image carrying any of them, and none
