@@ -404,3 +404,121 @@ def test_no_response_body_contains_the_credential(client):
 ])
 def test_if_none_match_parsing(header, want):
     assert _matches_etag(header, '"abc"') is want
+
+
+# --------------------------------------------------------------------------- #
+#  Sources
+# --------------------------------------------------------------------------- #
+def test_the_source_list_carries_all_five_providers_plus_the_element_sets(client):
+    body = client.get("/api/sources").json()
+    keys = [s["key"] for s in body["sources"]]
+    assert keys == ["leolabs", "northstar", "kbr", "ppec", "spacetrack", "elset"]
+    assert body["stateKeys"] == ["leolabs", "northstar", "kbr", "ppec", "spacetrack"]
+    assert body["elsetKey"] == "elset"
+
+
+def test_each_source_declares_the_marker_shape_the_plot_will_use(client):
+    body = client.get("/api/sources").json()
+    shapes = {s["key"]: s["shape"] for s in body["sources"]}
+    assert len(set(shapes.values())) == len(shapes), "two sources share a shape"
+    assert shapes["ppec"] == "mk-cross"
+    assert shapes["spacetrack"] == "mk-ex"
+    assert shapes["elset"] == "mk-square"
+
+
+def test_the_element_set_entry_is_marked_as_not_a_provider(client):
+    body = client.get("/api/sources").json()
+    kinds = {s["key"]: s["kind"] for s in body["sources"]}
+    assert kinds["elset"] == "elset"
+    assert kinds["spacetrack"] == "state"
+    elset = next(s for s in body["sources"] if s["key"] == "elset")
+    assert elset["udlSource"] is None
+
+
+def test_the_source_list_needs_no_udl_call(app_bits):
+    app, store, runner, _ = app_bits
+
+    def explode():
+        raise AssertionError("listing the sources built a UDL client")
+
+    listing = create_app(settings=app.state.settings, store=store, runner=runner,
+                         client_factory=explode)
+    with TestClient(listing) as c:
+        assert c.get("/api/sources").status_code == 200
+
+
+def test_the_probe_reports_which_providers_answered(app_bits):
+    app, store, runner, _ = app_bits
+
+    class Probing:
+        def probe_sources(self, sat_no, start, end):
+            return [dict(key="leolabs", label="LeoLabs", udlSource="LeoLabs",
+                         available=True, records=1, error=None),
+                    dict(key="ppec", label="PPEC", udlSource="PPEC",
+                         available=False, records=0, error=None)]
+
+    probing = create_app(settings=app.state.settings, store=store, runner=runner,
+                         client_factory=lambda: Probing())
+    with TestClient(probing) as c:
+        body = c.get("/api/sources/probe").json()
+        assert body["demo"] is False
+        assert [r["available"] for r in body["results"]] == [True, False]
+        # Probed with a real object: the first live group's reference.
+        assert body["satNo"] == store.active()[0]["reference"]
+
+
+def test_the_probe_accepts_an_explicit_satellite(app_bits):
+    app, store, runner, _ = app_bits
+    seen = {}
+
+    class Probing:
+        def probe_sources(self, sat_no, start, end):
+            seen["satNo"] = sat_no
+            return []
+
+    probing = create_app(settings=app.state.settings, store=store, runner=runner,
+                         client_factory=lambda: Probing())
+    with TestClient(probing) as c:
+        c.get("/api/sources/probe", params={"satNo": 25544})
+        assert seen["satNo"] == 25544
+
+
+def test_the_probe_with_no_groups_and_no_satellite_says_what_it_needs(client):
+    for group in client.get("/api/groups").json()["groups"]:
+        client.delete(f"/api/groups/{group['id']}")
+    r = client.get("/api/sources/probe")
+    assert r.status_code == 400
+    assert "nothing to probe with" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("params", [{"satNo": 0}, {"satNo": 10**10}, {"days": 0},
+                                    {"days": 999}])
+def test_bad_probe_parameters_are_rejected(client, params):
+    assert client.get("/api/sources/probe", params=params).status_code == 422
+
+
+def test_demo_mode_reports_every_provider_as_available(tmp_path):
+    settings = Settings(storage_path=tmp_path, demo=True)
+    app = create_app(settings=settings, store=GroupStore(tmp_path / "g.json"),
+                     runner=JobRunner(lambda s, p: "<html/>", tmp_path / "runs"))
+    with TestClient(app) as c:
+        body = c.get("/api/sources/probe").json()
+        assert body["demo"] is True
+        assert all(r["available"] for r in body["results"])
+        assert len(body["results"]) == 5
+
+
+def test_the_configure_tab_offers_exactly_the_providers_the_report_can_plot(client):
+    """The bug this replaced: the Configure tab listed state providers while the
+    report legend also carried the element-set series, so the two disagreed.
+    The tab's chips are now rendered from the same table the report uses."""
+    shell = client.get("/").text
+    body = client.get("/api/sources").json()
+    for source in body["sources"]:
+        if source["kind"] != "state":
+            continue
+        assert f'data-source="{source["key"]}"' in shell, source["key"]
+        assert source["shape"] in shell, source["key"]
+    # The element-set series is not offered as a toggle, because it is always
+    # plotted and it anchors the reference orbit.
+    assert 'data-source="elset"' not in shell

@@ -28,6 +28,7 @@ the two credentials, and demo mode replaces those.
 | `UDL_RATE_PER_MIN` | `60` | Token-bucket budget for UDL requests. |
 | `UDL_TIMEOUT_S` | `60` | Per-request timeout. |
 | `UDL_MAX_RESULTS` | `5000` | `maxResults` on each UDL query. |
+| | | Five state providers times the data modes times the objects is the per-run request count, so `UDL_RATE_PER_MIN` matters more than it did with three. |
 | `LOG_LEVEL` | `INFO` | Log threshold. |
 
 ## Platform requirements
@@ -176,10 +177,16 @@ from a tenant this application does not control.
 
 ## Known limitations, marked
 
-● **FACT.** The NorthStar and KBR provider source strings in
-  `models.STATE_SOURCES` are unverified against any tenant. The original script
-  carried the same caveat in its own comments. LeoLabs is the only one to
-  rely on until checked.
+● **FACT.** All five provider source strings in `models.STATE_SOURCES`
+  (`LeoLabs`, `NorthStar`, `KBR`, `PPEC`, `Space-Track`) are the names these
+  providers are commonly known by, not values read back from a live tenant.
+  The original script carried the same caveat for NorthStar and KBR; it applies
+  to all five. A tenant that spells one differently returns an empty series
+  rather than an error, so the provider silently never appears in a report.
+  **`GET /api/sources/probe`, and the "check availability" button next to the
+  provider chips, answer this directly**: one record requested per provider
+  against a real object, reporting which answered and why the others did not.
+  Run it once against the tenant and correct `STATE_SOURCES` from the result.
 ● **INFERENCE.** The `/udl/onorbit` endpoint and its field names, used by the
   catalogue picker, are taken from the public UDL data model and not from a
   call against a live tenant. Aliases are gathered in `udl.ONORBIT_FIELDS` so a
@@ -204,6 +211,32 @@ from a tenant this application does not control.
 ## Rollback
 
 There is no separate rollback flow. Repackage the previous build and resubmit.
+
+## Series and providers
+
+Two kinds of series are plotted, and an earlier version of this build confused
+them.
+
+● **State-vector series**, one per provider, from `/udl/statevector` filtered by
+  `source`. These are measured positions. Five are configured: LeoLabs,
+  NorthStar, KBR, PPEC and Space-Track. Filled marker shapes.
+● **The element-set series**, key `elset`, label "Element sets", derived from
+  `/udl/elset` by propagating each two-line element set to its own epoch. Not a
+  provider, and not optional: it is also where the reference orbit that anchors
+  the whole waterfall comes from. The one open marker shape.
+
+The element-set key used to be `spacetrack`, on the reasoning that the records
+the UDL serves on `/udl/elset` are 18 SDS two-line element sets. That was
+accurate but it took the name a real state-vector provider needs, and it made
+the Configure tab's provider list disagree with the report's legend: the tab
+offered state providers only while the legend also carried the element-set
+series. The provider chips are now rendered server-side from the same table the
+report legend uses, and a test asserts the two lists cannot drift apart again.
+
+Shape encodes the source and colour encodes the object, so six series need six
+distinct shapes: circle, diamond, triangle, cross, saltire, and the open square
+for the element sets. A browser test asserts all six are distinct and that each
+marker actually has area, because a clip-path typo yields an invisible chip.
 
 ## Migration from the original script
 

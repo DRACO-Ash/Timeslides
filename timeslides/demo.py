@@ -16,7 +16,7 @@ import numpy as np
 from sgp4.api import WGS72, Satrec, jday
 from sgp4.exporter import export_tle
 
-from .models import Elset, ObjectData, StateVector
+from .models import STATE_SOURCE_KEYS, Elset, ObjectData, StateVector
 from .physics import propagate
 
 
@@ -38,17 +38,24 @@ def _tle_lines(sat) -> tuple[str, str]:
     return export_tle(sat)
 
 
-def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=("leolabs", "northstar")):
+def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=None):
     """A self-consistent synthetic object: its states AND its TLEs both track its
     own orbit, so it sits near zero against its own reference. Objects differ only
     in mean motion, so re-anchoring on any of them shifts the others coherently.
-    Generates one or more state-vector providers to exercise the source controls."""
+    Generates a series for every configured state-vector provider so the source
+    controls, the marker shapes and the legend are all exercised without a
+    tenant. Cadence and noise differ per provider so the traces are
+    distinguishable on the plot rather than sitting on top of each other."""
+    sources = STATE_SOURCE_KEYS if sources is None else sources
     obj = ObjectData(sat_no=sat_no, name=name, colour="#4c9be8")
     sat = _make_satrec(start, n_rev_day, 0.0008, 53.0, 120.0, 30.0, ma0, sat_no)
     window_s = (end - start).total_seconds()
 
-    cadence = {"leolabs": 4, "northstar": 1.5, "kbr": 1.0}   # samples per day
-    noise = {"leolabs": 0.05, "northstar": 0.09, "kbr": 0.12}  # km
+    # samples per day, and positional noise in km
+    cadence = {"leolabs": 4, "northstar": 1.5, "kbr": 1.0, "ppec": 2.0,
+               "spacetrack": 1.2}
+    noise = {"leolabs": 0.05, "northstar": 0.09, "kbr": 0.12, "ppec": 0.07,
+             "spacetrack": 0.15}
     for key in sources:
         n = max(3, int(window_s / 86400 * cadence.get(key, 2)))
         svs = []

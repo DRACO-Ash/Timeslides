@@ -8,7 +8,9 @@ import pytest
 
 from timeslides.demo import build_demo_modes
 from timeslides.errors import ComputeError, ValidationError
-from timeslides.models import STATE_SOURCE_KEYS
+from timeslides.models import ELSET_KEY, STATE_SOURCES, STATE_SOURCE_KEYS
+
+_KEY_BY_UDL_SOURCE = {s["udl_source"]: s["key"] for s in STATE_SOURCES}
 from timeslides.pipeline import (MAX_GROUPS_PER_RUN, MAX_WINDOW_DAYS, Fetcher, RunSpec,
                                  build_report, demo_report, validate_modes,
                                  validate_sources, validate_window)
@@ -50,7 +52,9 @@ class FakeUDL:
             return []
         mode = "SIM" if data_mode == "SIMULATED" else "REAL"
         obj = self.objects.get((sat_no, mode))
-        key = {"LeoLabs": "leolabs", "NorthStar": "northstar", "KBR": "kbr"}[source]
+        # Derived from the source table rather than hardcoded, so adding a
+        # provider does not silently leave this fake behind.
+        key = _KEY_BY_UDL_SOURCE[source]
         return list(obj.state_series.get(key, [])) if obj else []
 
     def elsets(self, sat_no, start, end, data_mode="REAL"):
@@ -240,6 +244,26 @@ def test_the_fetcher_counts_its_calls_for_the_audit_line():
     assert f.calls == 3          # two providers plus one element-set call
 
 
+def test_all_five_providers_are_fetched_by_default():
+    """LeoLabs, NorthStar, KBR, PPEC and Space-Track, all as state vectors."""
+    udl = FakeUDL()
+    build_report([_group()], udl, _spec())
+    assert {c[1] for c in udl.sv_calls} == {
+        "LeoLabs", "NorthStar", "KBR", "PPEC", "Space-Track"}
+
+
+def test_the_default_source_list_is_every_state_provider():
+    assert validate_sources(None) == ("leolabs", "northstar", "kbr", "ppec",
+                                      "spacetrack")
+
+
+def test_the_element_set_series_is_not_a_selectable_provider():
+    """It is always plotted and is where the reference orbit comes from, so it
+    is not something a caller can switch off by naming providers."""
+    with pytest.raises(ValidationError, match="unknown state provider"):
+        validate_sources([ELSET_KEY])
+
+
 # --------------------------------------------------------------------------- #
 #  Demo mode
 # --------------------------------------------------------------------------- #
@@ -253,3 +277,21 @@ def test_demo_mode_renders_with_no_client_at_all():
 def test_demo_mode_supplies_its_own_window_when_none_is_given():
     html = demo_report(RunSpec())
     assert "24 Jun 2026" in html
+
+
+def test_demo_mode_honours_the_requested_providers():
+    """Without this the Configure tab's provider toggles looked broken in demo
+    mode: the synthetic generator produces every provider regardless."""
+    html = demo_report(_spec(sources=("leolabs",)))
+    # Checked on the legend chips, not by substring: SRC_LABEL is embedded
+    # wholesale as the client's label lookup, so every provider's name appears
+    # in the payload whether or not it is plotted.
+    assert 'data-src="leolabs"' in html
+    for absent in ("northstar", "kbr", "ppec", "spacetrack"):
+        assert f'data-src="{absent}"' not in html, absent
+
+
+def test_demo_mode_always_keeps_the_element_set_series():
+    """It anchors the reference orbit, so it is not optional."""
+    html = demo_report(_spec(sources=("leolabs",)))
+    assert f'data-src="{ELSET_KEY}"' in html

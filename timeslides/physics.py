@@ -40,7 +40,7 @@ import numpy as np
 from sgp4.api import Satrec, jday
 
 from .errors import ComputeError, ConfigError
-from .models import Elset, StateVector
+from .models import ELSET_KEY, Elset, StateVector
 
 
 # --------------------------------------------------------------------------- #
@@ -212,10 +212,11 @@ def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
 
 def compute_series(obj, ref_sat, invert: bool) -> dict:
     """Offset every state source and the TLEs of `obj` against the shared
-    reference orbit. Returns {source_key: [(epoch, offset_s), ...]} including
-    'spacetrack'. Only sources actually present on the object appear."""
+    reference orbit. Returns {source_key: [(epoch, offset_s), ...]}, one entry
+    per state-vector provider present on the object plus the element-set
+    series under ELSET_KEY."""
     sign = -1.0 if invert else 1.0
     out = {key: _state_offsets(svs, ref_sat, sign)
            for key, svs in obj.state_series.items()}
-    out["spacetrack"] = _tle_offsets(obj.elsets, ref_sat, sign)
+    out[ELSET_KEY] = _tle_offsets(obj.elsets, ref_sat, sign)
     return out

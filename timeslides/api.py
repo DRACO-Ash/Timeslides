@@ -24,7 +24,8 @@ from .config import Settings, load_settings
 from .errors import TimeslidesError, ValidationError
 from .groups import GroupStore
 from .jobs import DONE, JobRunner
-from .models import DATA_MODES, STATE_SOURCE_KEYS
+from .models import (DATA_MODES, ELSET_KEY, ELSET_LABEL, SRC_LABEL, SRC_SHAPE,
+                     SRC_SYMBOL, STATE_SOURCES, STATE_SOURCE_KEYS)
 from .pipeline import (MAX_GROUPS_PER_RUN, MAX_WINDOW_DAYS, RunSpec, build_report,
                        demo_report, validate_modes, validate_sources, validate_window)
 from .shell import render_shell
@@ -96,6 +97,7 @@ def create_app(settings: Settings = None, store=None, runner=None,
     _register_ui(app, settings, store)
     _register_groups(app, store)
     _register_catalogue(app, settings, _client)
+    _register_sources(app, settings, store, _client)
     _register_runs(app, settings, store, runner)
     return app
 
@@ -202,6 +204,60 @@ def _demo_catalogue(query: str, limit: int) -> list:
             for n, name in catalogue
             if not text or text in name.upper() or text in str(n)]
     return rows[:limit]
+
+
+# --------------------------------------------------------------------------- #
+#  Sources
+# --------------------------------------------------------------------------- #
+def _source_rows() -> list:
+    """The provider list, server-side, so the UI never keeps its own copy."""
+    rows = [dict(key=s["key"], label=s["label"], udlSource=s["udl_source"],
+                 symbol=s["symbol"], shape=SRC_SHAPE.get(s["symbol"], "mk-circle"),
+                 frame=s["frame"], kind="state")
+            for s in STATE_SOURCES]
+    rows.append(dict(key=ELSET_KEY, label=ELSET_LABEL, udlSource=None,
+                     symbol=SRC_SYMBOL[ELSET_KEY],
+                     shape=SRC_SHAPE[SRC_SYMBOL[ELSET_KEY]], frame="TEME",
+                     kind="elset"))
+    return rows
+
+
+def _register_sources(app: FastAPI, settings: Settings, store, client_for) -> None:
+    @app.get("/api/sources")
+    async def list_sources():
+        """What can be plotted, and how it is drawn. No UDL call."""
+        return {"sources": _source_rows(), "stateKeys": list(STATE_SOURCE_KEYS),
+                "elsetKey": ELSET_KEY, "demo": settings.demo}
+
+    @app.get("/api/sources/probe")
+    async def probe_sources(satNo: Optional[int] = Query(None, ge=1, le=999_999_999),
+                            days: int = Query(7, ge=1, le=MAX_WINDOW_DAYS)):
+        """Ask the UDL which providers actually answer for a real object.
+
+        The udl_source strings are names, not values read back from a tenant, so
+        a provider that is spelled differently returns nothing and silently
+        never appears in a report. This makes that visible.
+        """
+        end = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+        start = end - dt.timedelta(days=days)
+        sat_no = satNo or _probe_subject(store)
+        if settings.demo:
+            return {"satNo": sat_no, "demo": True,
+                    "results": [dict(key=s["key"], label=s["label"],
+                                     udlSource=s["udl_source"], available=True,
+                                     records=1, error=None) for s in STATE_SOURCES]}
+        return {"satNo": sat_no, "demo": False,
+                "results": client_for().probe_sources(sat_no, start, end)}
+
+
+def _probe_subject(store) -> int:
+    """Something real to probe with: the reference of the first live group."""
+    groups = store.active()
+    if not groups:
+        raise ValidationError(
+            "nothing to probe with. Give a satNo, or build a group first so "
+            "there is a real object to ask about.")
+    return groups[0]["reference"]
 
 
 # --------------------------------------------------------------------------- #

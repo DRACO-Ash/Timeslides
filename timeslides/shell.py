@@ -19,7 +19,8 @@ else's outage into a restart loop of our own.
 
 from __future__ import annotations
 
-from .models import DATA_MODES, SRC_LABEL, STATE_SOURCE_KEYS
+from .models import (DATA_MODES, ELSET_LABEL, SRC_LABEL, SRC_SHAPE, SRC_SYMBOL,
+                     STATE_SOURCES)
 from .report.builder import _asset, esc, json_for_html
 
 # Inlined so the page makes no external request at all. Without an icon the
@@ -39,10 +40,19 @@ def _mode_chips() -> str:
 
 
 def _source_chips() -> str:
+    """The state-vector providers, with the marker shape the plot will use.
+
+    Rendered server-side from STATE_SOURCES so this list cannot drift out of
+    step with what the report legend shows. That drift is exactly the bug this
+    replaced: the tab offered state providers only while the report legend also
+    carried the element-set series, so the two never matched.
+    """
     return "".join(
-        f'<button class="srcchip active" data-source="{esc(key)}">'
-        f'{esc(SRC_LABEL.get(key, key))}</button>'
-        for key in STATE_SOURCE_KEYS)
+        f'<button class="srcchip active" data-source="{esc(s["key"])}" '
+        f'title="UDL source {esc(s["udl_source"])}">'
+        f'<span class="mk {esc(SRC_SHAPE.get(s["symbol"], "mk-circle"))}"></span>'
+        f'{esc(s["label"])}</button>'
+        for s in STATE_SOURCES)
 
 
 def _configure_panel() -> str:
@@ -95,9 +105,12 @@ def _configure_panel() -> str:
             <label>Data mode</label>
             <div class="srcseg">{_mode_chips()}</div>
           </div>
-          <div class="ctrl">
-            <label>State providers</label>
+          <div class="ctrl wide">
+            <label>State providers
+              <button class="btn sm ghost" id="probebtn">check availability</button>
+            </label>
             <div class="srcseg">{_source_chips()}</div>
+            <div id="probemsg"></div>
           </div>
           <div class="ctrl">
             <label>Sign</label>
@@ -107,6 +120,14 @@ def _configure_panel() -> str:
         </div>
         <div id="runmsg"></div>
         <p class="note" id="groupcount"></p>
+        <p class="hint">Shape encodes the source and colour encodes the object.
+        Filled shapes are measured state vectors from a provider. The one open
+        shape is <b style="color:var(--muted)">{esc(ELSET_LABEL)}</b>, which is
+        every two-line element set in the window propagated to its own epoch;
+        it is always plotted, because it is also where the reference orbit
+        comes from. A provider with no data in the window simply does not
+        appear, so use <b style="color:var(--muted)">check availability</b> if
+        one is missing that you expected.</p>
       </section>
     </div>
   </div>

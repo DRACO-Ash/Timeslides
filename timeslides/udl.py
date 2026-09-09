@@ -28,7 +28,7 @@ import numpy as np
 
 from .audit import event
 from .errors import UpstreamError
-from .models import Elset, StateVector
+from .models import DATA_MODES, STATE_SOURCES, Elset, StateVector
 from .ratelimit import TokenBucket
 
 # UDL onorbit record -> what this application calls it. One place to correct.
@@ -234,6 +234,45 @@ class UDLClient:
             return {}
         found = self._onorbit({"satNo": ",".join(str(s) for s in wanted)})
         return {rec["satNo"]: rec for rec in found if rec["satNo"] in set(wanted)}
+
+    # --- source availability -------------------------------------------- #
+    def probe_source(self, source: dict, sat_no: int, start, end,
+                     data_mode="REAL") -> dict:
+        """Ask the UDL for a single record from one provider.
+
+        The udl_source strings in STATE_SOURCES are the names these providers
+        are known by, not values read back from a tenant, and a tenant that
+        spells one differently answers with an empty list rather than an error.
+        That failure is invisible in a report: the provider just never appears.
+        This turns it into something you can see.
+        """
+        params = {
+            "epoch": f"{self._iso(start)}..{self._iso(end)}",
+            "satNo": sat_no,
+            "source": source["udl_source"],
+            "maxResults": 1,
+        }
+        if data_mode:
+            params["dataMode"] = DATA_MODES.get(data_mode, data_mode)
+        row = dict(key=source["key"], label=source["label"],
+                   udlSource=source["udl_source"])
+        try:
+            records = self._get("/udl/statevector", params)
+        except UpstreamError as exc:
+            return {**row, "available": False, "records": 0, "error": str(exc)}
+        return {**row, "available": bool(records), "records": len(records),
+                "error": None}
+
+    def probe_sources(self, sat_no: int, start, end, sources=None,
+                      data_mode="REAL") -> list:
+        """One record requested per provider. Five cheap, rate-limited calls."""
+        chosen = sources if sources is not None else STATE_SOURCES
+        results = [self.probe_source(src, sat_no, start, end, data_mode)
+                   for src in chosen]
+        event("sources.probed", sat_no=sat_no,
+              available=",".join(r["key"] for r in results if r["available"]) or "none",
+              missing=",".join(r["key"] for r in results if not r["available"]) or "none")
+        return results
 
     def search_objects(self, query: str, limit: int = 50) -> list:
         """Catalogue search for the picker.

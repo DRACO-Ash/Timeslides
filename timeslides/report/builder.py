@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 
 from ..errors import ComputeError
-from ..models import SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL
+from ..models import ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL
 from ..physics import compute_series, propagate, reference_satrec
 
 ASSETS = Path(__file__).parent / "assets"
@@ -131,8 +131,8 @@ def _object_traces(obj, sat_no, name, present, series):
 
 def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, invert, window):
     """One (mode, reference) dataset with a FIXED layout: for each sat, one trace
-    per source key in `present` (state providers then Space-Track). Missing data
-    yields empty arrays so trace indices stay stable for restyle."""
+    per source key in `present` (state providers, then the element-set series).
+    Missing data yields empty arrays so trace indices stay stable for restyle."""
     ref_sat = reference_satrec(list(objects_by_sat.values()), ref_no, ref_epoch)
     colour = _sat_colours(sat_order, ref_no)
     xs, ys, colours, cards = [], [], [], []
@@ -219,9 +219,9 @@ def _has_source(objects_by_mode, key):
     """True when any object in any mode carries data for this source key."""
     for by_sat in objects_by_mode.values():
         for obj in by_sat.values():
-            if key == "spacetrack" and obj.elsets:
+            if key == ELSET_KEY and obj.elsets:
                 return True
-            if key != "spacetrack" and obj.state_series.get(key):
+            if key != ELSET_KEY and obj.state_series.get(key):
                 return True
     return False
 

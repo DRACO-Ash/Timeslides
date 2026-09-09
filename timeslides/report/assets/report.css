@@ -89,6 +89,8 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 .mk-triangle{width:0;height:0;background:transparent;
   border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid currentColor}
 .mk-square{border:1.6px solid currentColor;background:transparent}
+.mk-cross{background:currentColor;clip-path:polygon(38% 0,62% 0,62% 38%,100% 38%,100% 62%,62% 62%,62% 100%,38% 100%,38% 62%,0 62%,0 38%,38% 38%)}
+.mk-ex{background:currentColor;clip-path:polygon(18% 0,50% 32%,82% 0,100% 18%,68% 50%,100% 82%,82% 100%,50% 68%,18% 100%,0 82%,32% 50%,0 18%)}
 .card.nodata{opacity:.5}
 .card.nodata .big{color:var(--dim)!important}
 .legendkey{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);

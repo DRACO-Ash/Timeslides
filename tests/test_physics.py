@@ -18,7 +18,7 @@ import pytest
 from timeslides import physics
 from timeslides.demo import build_demo, build_demo_modes
 from timeslides.errors import ComputeError
-from timeslides.models import Elset, StateVector
+from timeslides.models import ELSET_KEY, Elset, StateVector
 
 START = dt.datetime(2026, 6, 24)
 END = dt.datetime(2026, 7, 1)
@@ -59,7 +59,7 @@ def _scalar_compute_series(obj, ref_sat, invert):
         r_ref, v_ref = physics.propagate(ref_sat, els.epoch)
         r_obs, _ = physics.propagate(els.satrec(), els.epoch)
         tle.append((els.epoch, sign * _scalar_offset(r_obs, r_ref, v_ref)))
-    out["spacetrack"] = tle
+    out[ELSET_KEY] = tle
     return out
 
 
@@ -248,7 +248,7 @@ def test_demo_tle_series_drifts_because_of_the_tle_text_round_trip(demo_objects,
     """
     ref = next(o for o in demo_objects if o.sat_no == 59884)
     series = physics.compute_series(ref, ref_sat, False)
-    assert max(abs(v) for _, v in series["spacetrack"]) > 1.0
+    assert max(abs(v) for _, v in series[ELSET_KEY]) > 1.0
     assert max(abs(v) for _, v in series["leolabs"]) < 0.5
 
 

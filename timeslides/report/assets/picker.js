@@ -214,6 +214,47 @@ async function archiveGroup(id) {
   }
 }
 
+/* --- provider availability ---------------------------------------------- */
+/* The UDL source strings are names, not values read back from a tenant, so a
+ * provider that is spelled differently returns nothing and never appears in a
+ * report. This asks the UDL for one record per provider and says which
+ * answered, rather than leaving it to be discovered by absence. */
+async function probeSources() {
+  const btn = el("probebtn");
+  btn.disabled = true;
+  el("probemsg").innerHTML = '<div class="note"><span class="spin"></span>asking the UDL</div>';
+  try {
+    const body = await api("/api/sources/probe?days=7");
+    const gone = [];
+    body.results.forEach(r => {
+      const chip = document.querySelector(`[data-source="${CSS.escape(r.key)}"]`);
+      if (!chip) return;
+      chip.classList.toggle("confirmed", r.available);
+      chip.classList.toggle("gone", !r.available);
+      chip.title = r.available
+        ? `UDL source ${r.udlSource}: answered`
+        : `UDL source ${r.udlSource}: no data${r.error ? " - " + r.error : ""}`;
+      if (!r.available) gone.push(r.label);
+    });
+    const subject = body.satNo ? ` (probed with NORAD ${body.satNo})` : "";
+    if (body.demo) {
+      show("probemsg", `Demo mode: all providers are synthetic${subject}.`);
+    } else if (gone.length) {
+      show("probemsg",
+           `No data from ${gone.join(", ")}${subject}. Either the provider does `
+           + `not cover this object in the last 7 days, or its UDL source name `
+           + `differs on this tenant. Hover a chip for the detail.`);
+    } else {
+      el("probemsg").innerHTML =
+        `<div class="note ok">Every provider answered${esc(subject)}.</div>`;
+    }
+  } catch (err) {
+    show("probemsg", err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* --- runs --------------------------------------------------------------- */
 function selectedModes() {
   return Array.from(document.querySelectorAll("[data-mode].active"))
@@ -319,6 +360,7 @@ function wire() {
   el("savebtn").addEventListener("click", saveGroup);
   el("cancelbtn").addEventListener("click", resetEditor);
   el("runbtn").addEventListener("click", startRun);
+  el("probebtn").addEventListener("click", probeSources);
 
   document.querySelectorAll("[data-mode],[data-source],#invert").forEach(b =>
     b.addEventListener("click", () => toggleChip(b)));

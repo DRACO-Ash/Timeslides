@@ -167,12 +167,23 @@ def build_report(groups: list, client, spec: RunSpec, progress=None) -> str:
 
 def demo_report(spec: RunSpec) -> str:
     """A report from synthetic data: no credentials, no network. This is what
-    the readiness of the whole render path is proved against in CI."""
+    the readiness of the whole render path is proved against in CI.
+
+    The spec's provider selection is honoured. The demo generator produces a
+    series for every configured provider, so without this filter deselecting a
+    provider in the Configure tab appeared to do nothing in demo mode, which
+    reads as a broken control rather than as an unused one.
+    """
     from .demo import build_demo_modes
     start = spec.start or dt.datetime(2026, 6, 24)
     end = spec.end or dt.datetime(2026, 7, 1)
+    wanted = set(spec.sources)
     panels = []
     for index, group in enumerate(build_demo_modes(start, end)):
+        for by_sat in group["objects_by_mode"].values():
+            for obj in by_sat.values():
+                obj.state_series = {k: v for k, v in obj.state_series.items()
+                                    if k in wanted}
         panels.append(build_panel(
             index, group["name"], group["sat_order"], group["names"],
             group["objects_by_mode"], ["REAL", "SIM"], group["reference"],

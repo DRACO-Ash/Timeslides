@@ -45,7 +45,17 @@ and it sits near zero against itself. Groups persist on the storage volume and
 are shared by everyone using the deployment.
 
 **Render.** Choose a window, the data modes and the state-vector providers,
-then render. A render is a background job, because a wide window across several
+then render. Five providers are configured: LeoLabs, NorthStar, KBR, PPEC and
+Space-Track, all as state vectors from `/udl/statevector`. Their UDL source
+names are the names these providers are known by rather than values read back
+from a tenant, so **check availability** asks the UDL for one record from each
+and says which answered. A provider that does not answer simply never appears
+in a report, which is why the button exists.
+
+Alongside the providers there is always an **Element sets** series: every
+two-line element set in the window propagated to its own epoch. It is not a
+provider and cannot be switched off, because it is also where the reference
+orbit comes from. A render is a background job, because a wide window across several
 providers is tens of UDL requests and a lot of propagation. Identical requests
 share one job.
 

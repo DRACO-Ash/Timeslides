@@ -369,3 +369,96 @@ def test_a_hostile_group_name_does_not_execute(page, live_server):
     assert page.evaluate("() => window.__xss") is None
     assert fired == []
     _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  Providers: the Configure tab and the report legend must agree
+# --------------------------------------------------------------------------- #
+def test_all_five_state_providers_are_offered_with_distinct_markers(page, live_server):
+    page.goto(live_server, wait_until="load")
+    chips = page.locator("[data-source]")
+    assert chips.count() == 5
+    labels = [t.strip() for t in chips.all_inner_texts()]
+    assert labels == ["LeoLabs", "NorthStar", "KBR", "PPEC", "Space-Track"]
+    # Shape encodes the source, so no two may share one.
+    shapes = page.eval_on_selector_all(
+        "[data-source] .mk",
+        "els => els.map(e => [...e.classList].find(c => c.startsWith('mk-')))")
+    assert len(set(shapes)) == 5, f"providers share a marker shape: {shapes}"
+    _assert_clean(page)
+
+
+def test_the_marker_shapes_actually_render(page, live_server):
+    """A clip-path typo yields an invisible chip. Check they have real area."""
+    page.goto(live_server, wait_until="load")
+    for i in range(page.locator("[data-source] .mk").count()):
+        box = page.locator("[data-source] .mk").nth(i).bounding_box()
+        assert box["width"] >= 6 and box["height"] >= 6, f"marker {i} did not render"
+    _assert_clean(page)
+
+
+def test_the_availability_check_annotates_each_provider(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#probebtn")
+    page.wait_for_selector("#probemsg .note")
+    # Demo mode answers for every provider.
+    assert page.locator("[data-source].confirmed").count() == 5
+    assert page.locator("[data-source].gone").count() == 0
+    assert "Demo mode" in page.locator("#probemsg").inner_text()
+    _assert_clean(page)
+
+
+def test_the_availability_check_does_not_toggle_the_providers_off(page, live_server):
+    """The button lives inside the providers label, next to the chips."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    before = page.locator("[data-source].active").count()
+    page.click("#probebtn")
+    page.wait_for_selector("#probemsg .note")
+    assert page.locator("[data-source].active").count() == before == 5
+    _assert_clean(page)
+
+
+def test_the_report_legend_matches_the_providers_that_were_selected(page, live_server):
+    """The mismatch this replaced: the tab offered three state providers while
+    the legend showed two of them plus a series called Space-Track that was
+    really the element sets. Now the legend is the five providers plus a
+    clearly named element-set series."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=180_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=120_000)
+
+    # Scoped to the panel actually showing: the report has one legend per group.
+    active = frame.locator(".panel.active")
+    legend = [t.strip() for t in active.locator(".srcseg .srcchip").all_inner_texts()]
+    assert legend == ["LeoLabs", "NorthStar", "KBR", "PPEC", "Space-Track",
+                      "Element sets"], legend
+    # Six series, six distinct shapes.
+    shapes = active.locator(".srcseg .srcchip .mk").evaluate_all(
+        "els => els.map(e => [...e.classList].find(c => c.startsWith('mk-')))")
+    assert len(set(shapes)) == 6, f"legend shapes not distinct: {shapes}"
+    _assert_clean(page)
+
+
+def test_deselecting_a_provider_keeps_it_out_of_the_report(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click('[data-source="kbr"]')
+    page.click('[data-source="ppec"]')
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=180_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=120_000)
+    legend = [t.strip() for t in
+              frame.locator(".panel.active .srcseg .srcchip").all_inner_texts()]
+    legend = [t.strip() for t in legend]
+    assert "KBR" not in legend
+    assert "PPEC" not in legend
+    assert "LeoLabs" in legend
+    # The element-set series is always there: it anchors the reference orbit.
+    assert "Element sets" in legend
+    _assert_clean(page)

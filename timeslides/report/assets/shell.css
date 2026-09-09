@@ -82,6 +82,10 @@
 .ctrl label{font:600 10px/1.2 var(--mono); letter-spacing:.12em;
             color:var(--dim); text-transform:uppercase}
 .ctrl .inp{width:110px; flex:none}
+.ctrl.wide{flex:1 1 320px; min-width:280px}
+.ctrl label{display:flex; align-items:center; gap:10px}
+.srcchip.gone{opacity:.42; border-style:dashed}
+.srcchip.confirmed{border-color:rgba(39,174,96,.55)}
 
 /* The report document carries its own classification banner, header and
  * footer, because it is a standalone artefact and has to stand alone when

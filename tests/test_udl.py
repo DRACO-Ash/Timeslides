@@ -280,3 +280,76 @@ def test_every_request_takes_a_token(client, settings):
     c.elsets(1, START, END)
     c.elsets(2, START, END)
     assert bucket.tokens == pytest.approx(before - 2)
+
+
+# --------------------------------------------------------------------------- #
+#  Provider availability
+# --------------------------------------------------------------------------- #
+def test_a_provider_that_answers_is_reported_available(client):
+    from timeslides.models import STATE_SOURCES
+    c, session = client([[sv_record()]])
+    got = c.probe_source(STATE_SOURCES[0], 59884, START, END)
+    assert got["available"] is True
+    assert got["records"] == 1
+    assert got["error"] is None
+    assert got["udlSource"] == "LeoLabs"
+    assert session.calls[0]["params"]["maxResults"] == 1
+
+
+def test_a_provider_that_returns_nothing_is_reported_unavailable(client):
+    """The failure this exists to catch: a source string the tenant spells
+    differently returns an empty list, not an error, so the provider silently
+    never appears in a report."""
+    from timeslides.models import STATE_SOURCES
+    c, _ = client([[]])
+    got = c.probe_source(STATE_SOURCES[3], 59884, START, END)
+    assert got["available"] is False
+    assert got["records"] == 0
+    assert got["error"] is None
+    assert got["label"] == "PPEC"
+
+
+def test_a_provider_that_errors_reports_the_reason_rather_than_raising(client):
+    """One bad provider must not sink the whole probe."""
+    from timeslides.models import STATE_SOURCES
+    c, _ = client([FakeResponse(401)])
+    got = c.probe_source(STATE_SOURCES[0], 59884, START, END)
+    assert got["available"] is False
+    assert "rejected the credentials" in got["error"]
+
+
+def test_probing_covers_every_configured_provider_with_one_request_each(client):
+    from timeslides.models import STATE_SOURCES
+    c, session = client([[sv_record()], [], [], [sv_record()], []])
+    got = c.probe_sources(59884, START, END)
+    assert [r["key"] for r in got] == [s["key"] for s in STATE_SOURCES]
+    assert len(session.calls) == len(STATE_SOURCES)
+    assert [r["available"] for r in got] == [True, False, False, True, False]
+
+
+def test_probing_uses_each_providers_own_udl_source_string(client):
+    from timeslides.models import STATE_SOURCES
+    c, session = client([[]] * len(STATE_SOURCES))
+    c.probe_sources(59884, START, END)
+    assert [call["params"]["source"] for call in session.calls] == \
+        [s["udl_source"] for s in STATE_SOURCES]
+
+
+def test_probe_results_are_recorded_as_an_audit_event(client, caplog):
+    c, _ = client([[sv_record()], [], [], [], []])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        c.probe_sources(59884, START, END)
+    rec = [r for r in caplog.records if r.getMessage() == "sources.probed"]
+    assert len(rec) == 1
+    assert rec[0].fields["available"] == "leolabs"
+    assert "ppec" in rec[0].fields["missing"]
+
+
+def test_space_track_is_now_a_state_vector_provider(client):
+    """It used to be the element-set series' label. It is a provider."""
+    from timeslides.models import STATE_SOURCES
+    st = next(s for s in STATE_SOURCES if s["key"] == "spacetrack")
+    c, session = client([[sv_record()]])
+    c.probe_source(st, 59884, START, END)
+    assert session.calls[0]["url"].endswith("/udl/statevector")
+    assert session.calls[0]["params"]["source"] == "Space-Track"
