@@ -96,42 +96,65 @@ def test_load_settings_does_not_mutate_the_process_environment():
 # --------------------------------------------------------------------------- #
 #  Packaging: what the upload artefact must carry for the gate to pass
 # --------------------------------------------------------------------------- #
-def test_the_coverage_configuration_is_not_excluded_from_the_artefact():
+def _root():
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent
+
+
+def _in_git_worktree() -> bool:
+    """The artefact is unzipped, not cloned, so git is not always present.
+
+    The first version of these tests assumed it was and failed inside the
+    extracted artefact, which is precisely the environment the platform runs
+    them in. The substantive check does not need git; only the ignore-rule
+    checks do, and those skip.
+    """
+    import subprocess
+    try:
+        done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                              cwd=_root(), capture_output=True, text=True)
+    except (OSError, FileNotFoundError):
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "true"
+
+
+def test_the_coverage_configuration_ships_with_the_package():
     """The gate reads the coverage report, not the suite.
 
     A broad `*.ini` rule in .gitignore once swallowed pytest.ini, so the
     uploaded artefact carried no coverage configuration, the platform's pytest
-    run emitted no coverage.xml, and a 99 per cent covered codebase scored zero
-    at the SonarQube gate. Found only by unzipping the artefact and running the
-    tests inside it, which is why the pipeline simulation exists.
-    """
-    import subprocess
-    from pathlib import Path
+    run emitted no coverage.xml, and a codebase at 99 per cent line coverage
+    scored zero at the SonarQube gate. Found only by unzipping the artefact and
+    running the tests inside it, which is why the pipeline simulation exists.
 
-    root = Path(__file__).resolve().parent.parent
-    ini = root / "pytest.ini"
-    assert ini.exists(), "pytest.ini is missing"
+    This assertion runs wherever the tests run, including inside the extracted
+    artefact, so a missing pytest.ini fails the test stage rather than passing
+    it and failing the scan stage with an unexplained zero.
+    """
+    ini = _root() / "pytest.ini"
+    assert ini.exists(), "pytest.ini is missing from the package"
     text = ini.read_text(encoding="utf-8")
     assert "--cov=timeslides" in text
     assert "--cov-report=xml" in text, "the gate needs coverage.xml"
     assert "browser" in text, "the browser marker must be registered"
 
-    ignored = subprocess.run(["git", "check-ignore", "pytest.ini"],
-                             cwd=root, capture_output=True, text=True)
-    assert ignored.returncode != 0, "pytest.ini is git-ignored and will not ship"
 
+@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
+def test_the_coverage_configuration_is_not_git_ignored():
+    import subprocess
+    ignored = subprocess.run(["git", "check-ignore", "pytest.ini"],
+                             cwd=_root(), capture_output=True, text=True)
+    assert ignored.returncode != 0, "pytest.ini is git-ignored and will not ship"
     tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "pytest.ini"],
-                             cwd=root, capture_output=True, text=True)
+                             cwd=_root(), capture_output=True, text=True)
     assert tracked.returncode == 0, "pytest.ini is not tracked and will not ship"
 
 
+@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
 def test_credential_files_are_still_ignored():
-    """Narrowing the ignore rule must not have opened the original hole."""
+    """Narrowing the ignore rule must not have reopened the original hole."""
     import subprocess
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parent.parent
     for name in ("credentials.ini", "secrets.ini", "udl-credentials.ini"):
         done = subprocess.run(["git", "check-ignore", name],
-                              cwd=root, capture_output=True, text=True)
+                              cwd=_root(), capture_output=True, text=True)
         assert done.returncode == 0, f"{name} is not ignored"
