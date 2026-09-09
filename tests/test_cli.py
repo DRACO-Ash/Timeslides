@@ -113,5 +113,5 @@ def test_the_default_output_name_carries_the_window_end(env, monkeypatch, capsys
     monkeypatch.setenv("TIMESLIDES_DEMO", "1")
     monkeypatch.chdir(env)
     assert main([]) == 0
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d")
     assert (env / f"phase_offset_{stamp}.html").exists()

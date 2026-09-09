@@ -29,6 +29,17 @@ DEFAULT_PORT = 8080
 DEFAULT_UDL_BASE = "https://unifieddatalibrary.com"
 DEFAULT_STORAGE = "/data"
 
+# Listen address. The empty string is the address-family-agnostic form of
+# "every interface", which is what socket.bind(("", port)) means and what
+# uvicorn passes through; verified to produce LISTEN on 0.0.0.0:8080.
+#
+# The platform requires this. It sets containerPort 8080 and probes the pod's
+# own address, so a container listening only on loopback builds cleanly, passes
+# every test, and then fails every probe. It is exposed as HOST so the address
+# is configuration rather than a hardcoded decision, and so a local run can
+# narrow it to 127.0.0.1 if you want that.
+DEFAULT_HOST = ""
+
 
 def _flag(env, name: str, default: bool = False) -> bool:
     raw = env.get(name)
@@ -61,6 +72,7 @@ class Settings:
     udl_base: str = DEFAULT_UDL_BASE
     udl_user: str = ""
     udl_pass: str = field(default="", repr=False)
+    host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     storage_path: Path = Path(DEFAULT_STORAGE)
     classification: str = "UNCLASSIFIED"
@@ -99,6 +111,7 @@ def load_settings(env=None) -> Settings:
         udl_base=(env.get("UDL_BASE") or DEFAULT_UDL_BASE).rstrip("/"),
         udl_user=(env.get("UDL_USER") or "").strip(),
         udl_pass=env.get("UDL_PASS") or "",
+        host=env.get("HOST", DEFAULT_HOST).strip(),
         port=_int(env, "PORT", DEFAULT_PORT, 1, 65535),
         storage_path=Path(env.get("STORAGE_MOUNT_PATH") or DEFAULT_STORAGE),
         classification=(env.get("CLASSIFICATION") or "UNCLASSIFIED").strip(),

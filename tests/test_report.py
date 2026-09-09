@@ -74,7 +74,7 @@ def test_payload_carries_one_entry_per_panel(html, panels):
     data = _payload(html)
     assert len(data["groups"]) == len(panels)
     assert data["srclbl"]["spacetrack"] == "Space-Track"
-    for entry, p in zip(data["groups"], panels):
+    for entry, p in zip(data["groups"], panels, strict=True):
         assert entry["divId"] == p["div_id"]
         assert set(entry["modeData"]) == {"REAL", "SIM"}
 
@@ -122,7 +122,7 @@ def test_a_hostile_group_name_cannot_break_out_of_the_markup():
     # The JSON block is still parseable, so the early-close did not land.
     assert _payload(doc) is not None
     # And the name survives intact as data for the client to escape again.
-    assert hostile == _panels(name_override=hostile)[0]["name"]
+    assert _panels(name_override=hostile)[0]["name"] == hostile
 
 
 def test_a_hostile_object_name_is_escaped_in_the_figure_hovertemplate():

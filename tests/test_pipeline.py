@@ -9,11 +9,13 @@ import pytest
 from timeslides.demo import build_demo_modes
 from timeslides.errors import ComputeError, ValidationError
 from timeslides.models import ELSET_KEY, STATE_SOURCES, STATE_SOURCE_KEYS
-
-_KEY_BY_UDL_SOURCE = {s["udl_source"]: s["key"] for s in STATE_SOURCES}
 from timeslides.pipeline import (MAX_GROUPS_PER_RUN, MAX_WINDOW_DAYS, Fetcher, RunSpec,
                                  build_report, demo_report, validate_modes,
                                  validate_sources, validate_window)
+
+# Derived from the source table rather than hardcoded, so adding a provider
+# does not silently leave the fake client behind.
+_KEY_BY_UDL_SOURCE = {s["udl_source"]: s["key"] for s in STATE_SOURCES}
 
 START = dt.datetime(2026, 6, 24)
 END = dt.datetime(2026, 7, 1)
@@ -100,9 +102,12 @@ def test_an_absurdly_long_window_is_refused():
     """The fan-out is objects x providers x modes requests each capped at
     maxResults. A year for a dozen objects exhausts the UDL budget for
     everyone else sharing the pod."""
+    over = START + dt.timedelta(days=MAX_WINDOW_DAYS + 1)
     with pytest.raises(ValidationError, match=f"maximum is {MAX_WINDOW_DAYS}"):
-        validate_window(START, START + dt.timedelta(days=MAX_WINDOW_DAYS + 1))
-    validate_window(START, START + dt.timedelta(days=MAX_WINDOW_DAYS))
+        validate_window(START, over)
+    # The boundary itself is allowed.
+    at_limit = START + dt.timedelta(days=MAX_WINDOW_DAYS)
+    assert validate_window(START, at_limit) == (START, at_limit)
 
 
 # --------------------------------------------------------------------------- #
@@ -133,10 +138,15 @@ def test_an_unknown_provider_is_rejected():
 #  RunSpec identity, which is the single-flight key
 # --------------------------------------------------------------------------- #
 def test_identical_specs_share_a_key_and_different_ones_do_not():
-    assert _spec().key() == _spec().key()
-    assert _spec().key() != _spec(invert=True).key()
-    assert _spec().key() != _spec(modes=("SIM",)).key()
-    assert _spec().key() != _spec(classification="SECRET").key()
+    # Two separately built specs, not the same expression twice: the point is
+    # that equal inputs produce an equal key, which needs two objects.
+    first = _spec()
+    second = _spec()
+    assert first is not second
+    assert first.key() == second.key()
+    assert first.key() != _spec(invert=True).key()
+    assert first.key() != _spec(modes=("SIM",)).key()
+    assert first.key() != _spec(classification="SECRET").key()
 
 
 def test_a_spec_is_hashable_so_it_can_index_the_single_flight_table():
@@ -191,20 +201,23 @@ def test_a_group_with_no_data_is_skipped_not_fatal():
 
 def test_if_nothing_can_be_built_that_is_an_error():
     udl = FakeUDL(empty_for=(59884, 67689, 69673))
+    groups, spec = [_group()], _spec()
     with pytest.raises(ComputeError, match="no group produced any usable data"):
-        build_report([_group()], udl, _spec())
+        build_report(groups, udl, spec)
 
 
 def test_no_groups_is_a_validation_error():
+    udl, spec = FakeUDL(), _spec()
     with pytest.raises(ValidationError, match="no groups selected"):
-        build_report([], FakeUDL(), _spec())
+        build_report([], udl, spec)
 
 
 def test_too_many_groups_in_one_run_is_refused():
     groups = [_group(f"G{i}", (59884, 67689), 59884)
               for i in range(MAX_GROUPS_PER_RUN + 1)]
+    udl, spec = FakeUDL(), _spec()
     with pytest.raises(ValidationError, match="maximum per run"):
-        build_report(groups, FakeUDL(), _spec())
+        build_report(groups, udl, spec)
 
 
 def test_progress_is_reported_once_per_group():

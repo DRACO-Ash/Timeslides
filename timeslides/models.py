@@ -77,11 +77,26 @@ class ObjectData:
 # are measured state vectors; the one open shape is the element-set series,
 # which is derived rather than measured.
 STATE_SOURCES = [
-    dict(key="leolabs",    label="LeoLabs",     udl_source="LeoLabs",    symbol="circle",      frame="J2000"),
-    dict(key="northstar",  label="NorthStar",   udl_source="NorthStar",  symbol="diamond",     frame="J2000"),
-    dict(key="kbr",        label="KBR",         udl_source="KBR",        symbol="triangle-up", frame="J2000"),
-    dict(key="ppec",       label="PPEC",        udl_source="PPEC",       symbol="cross",       frame="J2000"),
-    dict(key="spacetrack", label="Space-Track", udl_source="Space-Track", symbol="x",          frame="J2000"),
+    {
+        "key": "leolabs",
+        "label": "LeoLabs",
+        "udl_source": "LeoLabs",
+        "symbol": "circle",
+        "frame": "J2000"},
+    {
+        "key": "northstar",
+        "label": "NorthStar",
+        "udl_source": "NorthStar",
+        "symbol": "diamond",
+        "frame": "J2000"},
+    {"key": "kbr", "label": "KBR", "udl_source": "KBR", "symbol": "triangle-up", "frame": "J2000"},
+    {"key": "ppec", "label": "PPEC", "udl_source": "PPEC", "symbol": "cross", "frame": "J2000"},
+    {
+        "key": "spacetrack",
+        "label": "Space-Track",
+        "udl_source": "Space-Track",
+        "symbol": "x",
+        "frame": "J2000"},
 ]
 STATE_SOURCE_KEYS = [s["key"] for s in STATE_SOURCES]
 
@@ -90,7 +105,7 @@ STATE_SOURCE_KEYS = [s["key"] for s in STATE_SOURCES]
 ELSET_KEY = "elset"
 ELSET_LABEL = "Element sets"
 
-SRC_ORDER = STATE_SOURCE_KEYS + [ELSET_KEY]
+SRC_ORDER = [*STATE_SOURCE_KEYS, ELSET_KEY]
 SRC_LABEL = {**{s["key"]: s["label"] for s in STATE_SOURCES}, ELSET_KEY: ELSET_LABEL}
 SRC_SYMBOL = {**{s["key"]: s["symbol"] for s in STATE_SOURCES}, ELSET_KEY: "square-open"}
 # marker-shape CSS class for the legend / chips (shape encodes source; colour encodes object)

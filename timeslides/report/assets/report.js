@@ -68,27 +68,59 @@ function applyData(g){
 function setRef(g, refNo){ ST[g.id].ref = String(refNo); applyData(g); }
 function setMode(g, mode){ ST[g.id].mode = mode; refOptions(g); applyData(g); }
 
-function buildCards(g){
-  const wrap = document.getElementById("cards-"+g.id);
-  wrap.innerHTML = g.cards.map(c => `
-    <div class="card ${c.is_ref?'ref':''} ${c.absent?'nodata':''}" data-obj="${c.norad}" style="--c:${c.colour}"
+/* Card fragments, each named rather than nested inside the template. The
+ * kilometre line used to be a ternary inside a ternary, which is hard to read
+ * and hard to change without breaking. Same output. */
+function cardClasses(c){
+  const classes = ["card"];
+  if(c.is_ref) classes.push("ref");
+  if(c.absent) classes.push("nodata");
+  return classes.join(" ");
+}
+
+function cardBadge(c){
+  return c.is_ref
+    ? '<span class="refchip">REF</span>'
+    : '<span class="eye">SHOWN</span>';
+}
+
+function cardCounts(c){
+  const parts = Object.entries(c.counts)
+    .filter(entry => entry[1] > 0)
+    .map(entry => SRCLBL[entry[0]] + " " + entry[1]);
+  return parts.join(" \u00b7 ") || "no data";
+}
+
+function cardKmLine(c, vkms){
+  if(c.absent) return "no data in this mode";
+  if(c.is_ref) return "reference datum &mdash; all offsets measured from here";
+  const sense = c.current < 0 ? "trails" : "leads";
+  return sense + " reference by <b>~" + km(c.current, vkms).toFixed(0)
+       + " km</b> along-track";
+}
+
+function cardMarkup(c, vkms){
+  const offset = c.absent ? "&mdash;" : fmt(c.current);
+  const unit = c.absent ? "" : "s";
+  const drift = c.absent ? "&mdash;" : fmt(c.drift);
+  return `
+    <div class="${cardClasses(c)}" data-obj="${c.norad}" style="--c:${c.colour}"
          role="button" tabindex="0" aria-label="${esc(c.name)} ${c.norad}, tap to isolate">
       <div class="top">
         <div><div class="nm">${esc(c.name)}</div><div class="id">NORAD ${c.norad}</div></div>
-        ${c.is_ref ? '<span class="refchip">REF</span>' : '<span class="eye">SHOWN</span>'}
+        ${cardBadge(c)}
       </div>
       <div class="readout">
-        <div class="big" style="color:${c.colour}">${c.absent?'&mdash;':fmt(c.current)}<span class="u">${c.absent?'':'s'}</span></div>
-        <div class="sub">drift <b>${c.absent?'&mdash;':fmt(c.drift)}</b> s/day<br>${
-          Object.entries(c.counts).filter(e=>e[1]>0).map(e=>SRCLBL[e[0]]+' '+e[1]).join(' · ') || 'no data'
-        }</div>
+        <div class="big" style="color:${c.colour}">${offset}<span class="u">${unit}</span></div>
+        <div class="sub">drift <b>${drift}</b> s/day<br>${cardCounts(c)}</div>
       </div>
-      <div class="kmline">${c.absent
-        ? 'no data in this mode'
-        : (c.is_ref
-          ? 'reference datum &mdash; all offsets measured from here'
-          : (c.current<0?'trails':'leads') + ' reference by <b>~'+km(c.current,g.vkms).toFixed(0)+' km</b> along-track')}</div>
-    </div>`).join("");
+      <div class="kmline">${cardKmLine(c, vkms)}</div>
+    </div>`;
+}
+
+function buildCards(g){
+  const wrap = document.getElementById("cards-"+g.id);
+  wrap.innerHTML = g.cards.map(c => cardMarkup(c, g.vkms)).join("");
   wrap.querySelectorAll(".card").forEach(el => {
     el.addEventListener("click", () => toggleObj(g, +el.dataset.obj));
     el.addEventListener("keydown", e => {
@@ -97,32 +129,57 @@ function buildCards(g){
   });
 }
 
-function buildRelative(g){
-  const box = document.getElementById("rel-"+g.id);
-  const rows = [];
-  for(let i=0;i<g.cards.length;i++) for(let j=i+1;j<g.cards.length;j++){
-    const a=g.cards[i], b=g.cards[j];
-    const gap = a.current - b.current;
-    const rel = a.drift - b.drift;
-    const rate = Math.abs(rel);
-    let state, cls, eta="";
-    if(Math.abs(gap) < 1){ state="ALIGNED"; cls="rel-al"; }
-    else if(rate < 0.05){ state="STEADY"; cls="rel-st"; }
-    else if(Math.sign(gap) === -Math.sign(rel)){
-      state="CLOSING"; cls="rel-cl"; eta = " · ~"+(Math.abs(gap)/rate).toFixed(0)+" d to align";
-    } else { state="SEPARATING"; cls="rel-sp"; }
-    const link = state==="CLOSING" ? "&rarr;&larr;" : state==="SEPARATING" ? "&larr;&nbsp;&rarr;" : "&mdash;";
-    const rateStr = rate>=0.05 ? rate.toFixed(1)+" s/day · " : "";
-    rows.push(`<div class="rel">
+/* Relative motion between a pair of objects. Split out of buildRelative,
+ * which measured 20 on cognitive complexity against a cap of 15, and the
+ * arrow was a chained ternary. Same states, same thresholds, same output. */
+const PAIR_LINK = {
+  CLOSING: "&rarr;&larr;",
+  SEPARATING: "&larr;&nbsp;&rarr;"
+};
+
+function pairState(gap, rel){
+  const rate = Math.abs(rel);
+  if(Math.abs(gap) < 1) return { state: "ALIGNED", cls: "rel-al", eta: "" };
+  if(rate < 0.05) return { state: "STEADY", cls: "rel-st", eta: "" };
+  if(Math.sign(gap) === -Math.sign(rel)){
+    return {
+      state: "CLOSING",
+      cls: "rel-cl",
+      eta: " \u00b7 ~" + (Math.abs(gap)/rate).toFixed(0) + " d to align"
+    };
+  }
+  return { state: "SEPARATING", cls: "rel-sp", eta: "" };
+}
+
+function pairRow(a, b, vkms){
+  const gap = a.current - b.current;
+  const rel = a.drift - b.drift;
+  const rate = Math.abs(rel);
+  const outcome = pairState(gap, rel);
+  const link = PAIR_LINK[outcome.state] || "&mdash;";
+  const rateStr = rate >= 0.05 ? rate.toFixed(1) + " s/day \u00b7 " : "";
+  const gapStr = Math.abs(gap).toFixed(0);
+  const kmStr = km(gap, vkms).toFixed(0);
+  return `<div class="rel">
       <div class="rel-h"><span class="rdot" style="background:${a.colour}"></span>${esc(a.name)}
         <span class="rlink">${link}</span>
         <span class="rdot" style="background:${b.colour}"></span>${esc(b.name)}</div>
-      <div class="rel-b"><span class="rbadge ${cls}">${state}</span>
-        ${rateStr}gap ${Math.abs(gap).toFixed(0)} s (~${km(gap,g.vkms).toFixed(0)} km)${eta}</div>
-    </div>`);
+      <div class="rel-b"><span class="rbadge ${outcome.cls}">${outcome.state}</span>
+        ${rateStr}gap ${gapStr} s (~${kmStr} km)${outcome.eta}</div>
+    </div>`;
+}
+
+function buildRelative(g){
+  const box = document.getElementById("rel-"+g.id);
+  const rows = [];
+  for(let i = 0; i < g.cards.length; i++){
+    for(let j = i + 1; j < g.cards.length; j++){
+      rows.push(pairRow(g.cards[i], g.cards[j], g.vkms));
+    }
   }
-  box.innerHTML = rows.length ? rows.join("") :
-    '<p class="hint">Add two or more objects to see relative motion.</p>';
+  box.innerHTML = rows.length
+    ? rows.join("")
+    : '<p class="hint">Add two or more objects to see relative motion.</p>';
 }
 
 function toggleObj(g, norad){

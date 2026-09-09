@@ -66,9 +66,9 @@
 
 /* Status and messages */
 .note{font:12px/1.5 var(--sans); color:var(--muted); margin:8px 0}
-.err{font:12px/1.5 var(--mono); color:#ff9a9a; background:rgba(255,90,90,.09);
-     border:1px solid rgba(255,90,90,.3); border-radius:6px; padding:8px 10px;
-     margin:8px 0; white-space:pre-wrap; word-break:break-word}
+.err{font:12px/1.5 var(--mono); color:#ffc2c2; background:#2a1218;
+     border:1px solid #6b2b33; border-radius:6px; padding:8px 10px;
+     margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere}
 .ok{color:var(--green)}
 .spin{display:inline-block; width:11px; height:11px; border-radius:50%;
       border:2px solid rgba(115,155,207,.3); border-top-color:var(--blue-l);
@@ -79,11 +79,11 @@
 /* Run controls */
 .ctrls{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end}
 .ctrl{display:flex; flex-direction:column; gap:5px}
-.ctrl label{font:600 10px/1.2 var(--mono); letter-spacing:.12em;
+.ctrl label{display:flex; align-items:center; gap:10px;
+            font:600 10px/1.2 var(--mono); letter-spacing:.12em;
             color:var(--dim); text-transform:uppercase}
 .ctrl .inp{width:110px; flex:none}
 .ctrl.wide{flex:1 1 320px; min-width:280px}
-.ctrl label{display:flex; align-items:center; gap:10px}
 .srcchip.gone{opacity:.42; border-style:dashed}
 .srcchip.confirmed{border-color:rgba(39,174,96,.55)}
 

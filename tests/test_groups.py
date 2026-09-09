@@ -19,6 +19,11 @@ def store(tmp_path):
     return GroupStore(tmp_path / "groups.json")
 
 
+def _refuse_replace(*_args, **_kwargs):
+    """Injected in place of os.replace, so the atomic rename fails."""
+    raise OSError("no")
+
+
 def _group(**over):
     base = dict(name="PRC SpacePlane 4", sats=[67689, 69673, 59884], reference=67689)
     base.update(over)
@@ -99,8 +104,9 @@ def test_a_group_needs_at_least_two_distinct_objects():
 
 
 def test_an_over_large_group_is_rejected():
+    too_many = list(range(1, MAX_SATS + 2))
     with pytest.raises(ValidationError, match=f"exceed {MAX_SATS}"):
-        clean_sats(list(range(1, MAX_SATS + 2)))
+        clean_sats(too_many)
 
 
 @pytest.mark.parametrize("bad", ["59884 67689", b"x", 5, None, {"a": 1}])
@@ -126,8 +132,9 @@ def test_the_reference_defaults_to_the_first_member():
 
 def test_a_reference_outside_the_group_is_rejected():
     """The waterfall is anchored on one of the group's own objects."""
+    payload = _group(reference=11111)
     with pytest.raises(ValidationError, match="not a member of the group"):
-        clean_group(_group(reference=11111))
+        clean_group(payload)
 
 
 def test_a_non_object_payload_is_rejected():
@@ -166,14 +173,16 @@ def test_getting_an_unknown_id_is_a_not_found(store):
 
 def test_two_live_groups_cannot_share_a_name(store):
     store.create(_group())
+    same_name = _group(sats=[1, 2, 3], reference=1)
     with pytest.raises(ValidationError, match="already exists"):
-        store.create(_group(sats=[1, 2, 3], reference=1))
+        store.create(same_name)
 
 
 def test_the_duplicate_name_check_is_case_insensitive(store):
     store.create(_group(name="Cosmos"))
+    shouting = _group(name="COSMOS", sats=[1, 2], reference=1)
     with pytest.raises(ValidationError, match="already exists"):
-        store.create(_group(name="COSMOS", sats=[1, 2], reference=1))
+        store.create(shouting)
 
 
 def test_an_update_replaces_the_members_and_keeps_the_id_and_created_time(store):
@@ -192,14 +201,16 @@ def test_a_group_can_be_renamed_to_its_own_name(store):
 
 
 def test_updating_an_unknown_id_is_a_not_found(store):
+    payload = _group()
     with pytest.raises(NotFoundError):
-        store.update("nope", _group())
+        store.update("nope", payload)
 
 
 def test_an_invalid_update_leaves_the_stored_group_untouched(store):
     created = store.create(_group())
+    too_few = _group(sats=[59884])
     with pytest.raises(ValidationError):
-        store.update(created["id"], _group(sats=[59884]))
+        store.update(created["id"], too_few)
     assert store.get(created["id"])["sats"] == created["sats"]
     assert store.load()["rev"] == 1              # no revision burned on a reject
 
@@ -252,9 +263,9 @@ def test_a_write_carrying_a_stale_revision_is_refused(store):
     created = store.create(_group())
     stale = store.load()["rev"]
     store.update(created["id"], _group(sats=[1, 2], reference=1))     # someone else
+    mine = _group(sats=[5, 6], reference=5)
     with pytest.raises(ConflictError, match="changed since you loaded it"):
-        store.update(created["id"], _group(sats=[5, 6], reference=5),
-                     expected_rev=stale)
+        store.update(created["id"], mine, expected_rev=stale)
     assert store.get(created["id"])["sats"] == [1, 2]                 # not clobbered
 
 
@@ -289,7 +300,7 @@ def test_concurrent_creates_all_land_and_the_revision_counts_them(store):
         barrier.wait()
         try:
             store.create(_group(name=f"GROUP {i}", sats=[i + 1, i + 2], reference=i + 1))
-        except Exception as exc:                     # noqa: BLE001 - recorded, asserted
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
@@ -333,8 +344,9 @@ def test_a_corrupt_store_is_reported_and_not_overwritten(tmp_path):
 def test_a_json_document_of_the_wrong_shape_is_rejected(tmp_path):
     path = tmp_path / "groups.json"
     path.write_text('{"groups": "not a list"}', encoding="utf-8")
+    store = GroupStore(path)
     with pytest.raises(ValidationError, match="not a group document"):
-        GroupStore(path).load()
+        store.load()
 
 
 def test_a_write_failure_explains_the_fsgroup_trap(tmp_path, monkeypatch):
@@ -351,16 +363,18 @@ def test_a_write_failure_explains_the_fsgroup_trap(tmp_path, monkeypatch):
     def denied(*_a, **_k):
         raise PermissionError(13, "Permission denied")
 
+    payload = _group()
     monkeypatch.setattr(os, "replace", denied)
     with pytest.raises(ValidationError, match="fsGroup"):
-        store.create(_group())
+        store.create(payload)
 
 
 def test_a_failed_write_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
     store = GroupStore(tmp_path / "groups.json")
-    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("no")))
+    payload = _group()
+    monkeypatch.setattr(os, "replace", _refuse_replace)
     with pytest.raises(ValidationError):
-        store.create(_group())
+        store.create(payload)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -369,9 +383,10 @@ def test_a_failed_write_does_not_damage_an_existing_document(tmp_path, monkeypat
     store = GroupStore(tmp_path / "groups.json")
     first = store.create(_group())
     before = store.path.read_text(encoding="utf-8")
-    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("no")))
+    second = _group(name="SECOND", sats=[1, 2], reference=1)
+    monkeypatch.setattr(os, "replace", _refuse_replace)
     with pytest.raises(ValidationError):
-        store.create(_group(name="SECOND", sats=[1, 2], reference=1))
+        store.create(second)
     monkeypatch.undo()
     assert store.path.read_text(encoding="utf-8") == before
     assert [g["id"] for g in store.active()] == [first["id"]]

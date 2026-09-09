@@ -34,7 +34,7 @@ def main(argv=None) -> int:
 
     settings = load_settings()
     configure(settings.log_level)
-    end = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+    end = dt.datetime.now(dt.UTC).replace(tzinfo=None, microsecond=0)
     # Building the spec validates the modes and providers, so it belongs inside
     # the handler: a bad --modes value should print one line, not a traceback.
     try:

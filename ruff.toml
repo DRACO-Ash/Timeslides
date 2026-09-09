@@ -1,0 +1,34 @@
+# Local pre-flight for the App Store quality gate.
+#
+# The gate is SonarQube and it runs in the pipeline, so it can only tell you
+# about a problem after an upload. This configuration approximates the rule
+# families that gate actually enforced against this project, which makes the
+# same class of finding visible in seconds on a laptop:
+#
+#     .venv/bin/ruff check timeslides tests app.py
+#
+# It is not a substitute for the gate. It found 37 issues the gate would also
+# have raised, and it cannot see the CSS, the JavaScript, or cognitive
+# complexity the way Sonar does.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "C90", "N", "UP", "SIM", "RET", "ARG", "PIE", "PL", "RUF"]
+ignore = [
+    "E501",      # line length is checked by the formatter, not here
+    "PLR0913",   # argument counts: the lifted renderer signatures are wide by design
+    "PLR0917",   # likewise, positional argument counts
+    "PLR2004",   # magic values: physical constants and thresholds read better inline
+    "PLR0912",   # branch counts, covered by C90 cognitive complexity instead
+    "PLR0915",   # statement counts, likewise
+    "PLC0415",   # deliberate lazy imports: astropy, plotly, requests, uvicorn
+    "UP045",     # Optional[X] is kept for the pydantic and FastAPI models
+]
+
+[lint.per-file-ignores]
+# Test doubles take arguments they never read, on purpose.
+"tests/*" = ["ARG001", "ARG002", "ARG005", "RUF001"]
+
+[lint.mccabe]
+max-complexity = 15          # the same cap the App Store gate applies

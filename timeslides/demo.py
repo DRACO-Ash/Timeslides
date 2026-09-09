@@ -17,7 +17,16 @@ from sgp4.api import WGS72, Satrec, jday
 from sgp4.exporter import export_tle
 
 from .models import STATE_SOURCE_KEYS, Elset, ObjectData, StateVector
+
 from .physics import propagate
+# The synthetic objects, named once. The same three appear in the REAL and SIM
+# sets of the demo group and in the fixtures, so the strings were repeated.
+OBJECT_G = "OBJECT G"
+OBJECT_H = "OBJECT H"
+PRC_TEST_4 = "PRC TEST SPACECRAFT 4"
+CLUSTER_LEAD = "CLUSTER LEAD"
+CLUSTER_TRAIL = "CLUSTER TRAIL"
+CLUSTER_TENDER = "CLUSTER TENDER"
 
 
 def _make_satrec(epoch, n_rev_day, ecc, inc_deg, raan_deg, argp_deg, ma_deg, satnum):
@@ -87,16 +96,18 @@ def _demo_group(specs, start, end, seed):
     window_s = (end - start).total_seconds()
     objs = []
     for sat_no, name, drift in specs:
-        n = n0 * (1.0 + drift / window_s)   # (offset/n)/T = dn/n
+        # A fractional change in mean motion of drift/window_s produces the
+        # target along-track offset by the end of the window.
+        n = n0 * (1.0 + drift / window_s)
         objs.append(_make_demo_object(sat_no, name, start, end, n, 200.0, rng))
     return objs
 
 
 def build_demo(start, end):
     return _demo_group([
-        (59884, "OBJECT G", 0.0),
-        (67689, "PRC TEST SPACECRAFT 4", -250.0),
-        (69673, "OBJECT H", -185.0),
+        (59884, OBJECT_G, 0.0),
+        (67689, PRC_TEST_4, -250.0),
+        (69673, OBJECT_H, -185.0),
     ], start, end, seed=42)
 
 
@@ -108,17 +119,21 @@ def build_demo_modes(start, end):
         sim = _demo_group(sim_specs, start, end, seed + 100)
         sat_order = [s for s, _, _ in real_specs]
         names = {s: n for s, n, _ in real_specs}
-        return dict(name=name, sat_order=sat_order, names=names, reference=ref,
-                    objects_by_mode={"REAL": {o.sat_no: o for o in real},
-                                     "SIM": {o.sat_no: o for o in sim}})
+        return {
+            "name": name,
+            "sat_order": sat_order,
+            "names": names,
+            "reference": ref,
+            "objects_by_mode": {"REAL": {o.sat_no: o for o in real},
+                                     "SIM": {o.sat_no: o for o in sim}}}
     prc = group("PRC Spaceplane", 59884,
-                [(59884, "OBJECT G", 0.0), (67689, "PRC TEST SPACECRAFT 4", -250.0),
-                 (69673, "OBJECT H", -185.0)],
-                [(59884, "OBJECT G", 0.0), (67689, "PRC TEST SPACECRAFT 4", -120.0),
-                 (69673, "OBJECT H", -240.0)], 42)
+                [(59884, OBJECT_G, 0.0), (67689, PRC_TEST_4, -250.0),
+                 (69673, OBJECT_H, -185.0)],
+                [(59884, OBJECT_G, 0.0), (67689, PRC_TEST_4, -120.0),
+                 (69673, OBJECT_H, -240.0)], 42)
     cluster = group("LEO Cluster", 40001,
-                    [(40001, "CLUSTER LEAD", 0.0), (40002, "CLUSTER TRAIL", -140.0),
-                     (40003, "CLUSTER TENDER", 70.0)],
-                    [(40001, "CLUSTER LEAD", 0.0), (40002, "CLUSTER TRAIL", -90.0),
-                     (40003, "CLUSTER TENDER", 110.0)], 7)
+                    [(40001, CLUSTER_LEAD, 0.0), (40002, CLUSTER_TRAIL, -140.0),
+                     (40003, CLUSTER_TENDER, 70.0)],
+                    [(40001, CLUSTER_LEAD, 0.0), (40002, CLUSTER_TRAIL, -90.0),
+                     (40003, CLUSTER_TENDER, 110.0)], 7)
     return [prc, cluster]

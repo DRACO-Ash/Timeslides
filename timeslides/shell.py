@@ -19,8 +19,7 @@ else's outage into a restart loop of our own.
 
 from __future__ import annotations
 
-from .models import (DATA_MODES, ELSET_LABEL, SRC_LABEL, SRC_SHAPE, SRC_SYMBOL,
-                     STATE_SOURCES)
+from .models import DATA_MODES, ELSET_LABEL, SRC_SHAPE, STATE_SOURCES
 from .report.builder import _asset, esc, json_for_html
 
 # Inlined so the page makes no external request at all. Without an icon the
@@ -152,7 +151,7 @@ def render_shell(classification: str, demo: bool = False) -> str:
     """The application page. Self-contained; no external requests."""
     banner = esc(classification.upper())
     mode_note = ' &middot; <b style="color:var(--copper)">DEMO DATA</b>' if demo else ""
-    payload = json_for_html(dict(demo=bool(demo), classification=classification))
+    payload = json_for_html({"demo": bool(demo), "classification": classification})
     body = f"""
 <div class="app">
   <div class="classif">{banner}</div>

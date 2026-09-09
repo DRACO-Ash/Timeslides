@@ -7,3 +7,4 @@
 # passed one.
 -r requirements.txt
 playwright==1.62.0
+ruff==0.16.6          # local pre-flight for the quality gate, see ruff.toml

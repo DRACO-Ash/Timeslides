@@ -61,7 +61,7 @@ def parse_epoch(raw: str) -> dt.datetime:
         text = str(raw)
         text = (text.replace("Z", "+00:00").replace(" ", "T", 1)
                 if "T" not in text else text.replace("Z", "+00:00"))
-        return dt.datetime.fromisoformat(text).astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return dt.datetime.fromisoformat(text).astimezone(dt.UTC).replace(tzinfo=None)
     except (TypeError, ValueError) as exc:
         raise UpstreamError(f"unparseable epoch from the UDL: {raw!r}") from exc
 
@@ -216,15 +216,14 @@ class UDLClient:
                 sat_no = int(sat_no)
             except (TypeError, ValueError):
                 continue
-            out.append(dict(
-                satNo=sat_no,
-                name=str(_first(rec, ONORBIT_FIELDS["name"]) or f"OBJECT {sat_no}"),
-                intlDes=_first(rec, ONORBIT_FIELDS["int_des"]),
-                country=_first(rec, ONORBIT_FIELDS["country"]),
-                objectType=_first(rec, ONORBIT_FIELDS["object_type"]),
-                launchDate=_first(rec, ONORBIT_FIELDS["launch_date"]),
-                decayDate=_first(rec, ONORBIT_FIELDS["decay_date"]),
-            ))
+            out.append({
+                "satNo": sat_no,
+                "name": str(_first(rec, ONORBIT_FIELDS["name"]) or f"OBJECT {sat_no}"),
+                "intlDes": _first(rec, ONORBIT_FIELDS["int_des"]),
+                "country": _first(rec, ONORBIT_FIELDS["country"]),
+                "objectType": _first(rec, ONORBIT_FIELDS["object_type"]),
+                "launchDate": _first(rec, ONORBIT_FIELDS["launch_date"]),
+                "decayDate": _first(rec, ONORBIT_FIELDS["decay_date"])})
         return out
 
     def objects_by_satno(self, sat_nos) -> dict:
@@ -254,8 +253,7 @@ class UDLClient:
         }
         if data_mode:
             params["dataMode"] = DATA_MODES.get(data_mode, data_mode)
-        row = dict(key=source["key"], label=source["label"],
-                   udlSource=source["udl_source"])
+        row = {"key": source["key"], "label": source["label"], "udlSource": source["udl_source"]}
         try:
             records = self._get("/udl/statevector", params)
         except UpstreamError as exc:

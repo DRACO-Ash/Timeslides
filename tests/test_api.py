@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +30,7 @@ def app_bits(tmp_path):
 
     runner = JobRunner(render, settings.runs_path, workers=1)
     app = create_app(settings=settings, store=store, runner=runner,
-                     client_factory=lambda: FakeCatalogue())
+                     client_factory=FakeCatalogue)
     yield app, store, runner, rendered
     runner.shutdown()
 
@@ -222,14 +221,14 @@ def test_a_run_is_accepted_and_completes(client):
 
 
 def test_a_run_covers_every_live_group_when_none_is_named(client, app_bits):
-    _, store, _, rendered = app_bits
+    _, _, _, rendered = app_bits
     client.post("/api/runs", json={"days": 7})
     _await_run(client, client.get("/api/runs").json()["runs"][0]["id"])
     assert len(rendered[0].group_ids) == 3
 
 
 def test_a_run_can_name_specific_groups(client, app_bits):
-    _, store, _, rendered = app_bits
+    _, _, _, rendered = app_bits
     gid = client.get("/api/groups").json()["groups"][1]["id"]
     r = client.post("/api/runs", json={"groupIds": [gid]})
     _await_run(client, r.json()["id"])
@@ -341,7 +340,7 @@ def test_asking_for_a_report_before_it_is_ready_says_so(app_bits):
     runner = JobRunner(lambda s, p: (release.wait(5), "<html/>")[1],
                        app.state.settings.runs_path, workers=1)
     slow = create_app(settings=app.state.settings, store=store, runner=runner,
-                      client_factory=lambda: FakeCatalogue())
+                      client_factory=FakeCatalogue)
     try:
         with TestClient(slow) as c:
             run_id = c.post("/api/runs", json={}).json()["id"]
@@ -362,7 +361,7 @@ def test_a_failed_run_reports_its_error(app_bits):
 
     runner = JobRunner(boom, app.state.settings.runs_path, workers=1)
     failing = create_app(settings=app.state.settings, store=store, runner=runner,
-                         client_factory=lambda: FakeCatalogue())
+                         client_factory=FakeCatalogue)
     try:
         with TestClient(failing) as c:
             run_id = c.post("/api/runs", json={}).json()["id"]
@@ -448,7 +447,7 @@ def test_the_source_list_needs_no_udl_call(app_bits):
 
 
 def test_the_probe_reports_which_providers_answered(app_bits):
-    app, store, runner, _ = app_bits
+    app, store, runner, _ = app_bits  # store is read for the probe subject
 
     class Probing:
         def probe_sources(self, sat_no, start, end):
@@ -458,7 +457,7 @@ def test_the_probe_reports_which_providers_answered(app_bits):
                          available=False, records=0, error=None)]
 
     probing = create_app(settings=app.state.settings, store=store, runner=runner,
-                         client_factory=lambda: Probing())
+                         client_factory=Probing)
     with TestClient(probing) as c:
         body = c.get("/api/sources/probe").json()
         assert body["demo"] is False
@@ -477,7 +476,7 @@ def test_the_probe_accepts_an_explicit_satellite(app_bits):
             return []
 
     probing = create_app(settings=app.state.settings, store=store, runner=runner,
-                         client_factory=lambda: Probing())
+                         client_factory=Probing)
     with TestClient(probing) as c:
         c.get("/api/sources/probe", params={"satNo": 25544})
         assert seen["satNo"] == 25544

@@ -32,14 +32,20 @@ function el(id) { return document.getElementById(id); }
 function show(target, message, isError) {
   const box = el(target);
   if (!box) return;
-  box.innerHTML = message ? `<div class="${isError ? "err" : "note"}">${esc(message)}</div>` : "";
+  if (!message) {
+    box.innerHTML = "";
+    return;
+  }
+  const kind = isError ? "err" : "note";
+  box.innerHTML = `<div class="${kind}">${esc(message)}</div>`;
 }
 
 /* --- transport ---------------------------------------------------------- */
 async function api(path, options) {
-  const res = await fetch(path, Object.assign({
-    headers: { "Content-Type": "application/json" }
-  }, options || {}));
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...(options || {})
+  });
   let body = null;
   try { body = await res.json(); } catch (_) { /* empty or non-JSON */ }
   if (!res.ok) {
@@ -165,7 +171,7 @@ function editGroup(id) {
 function nameFor(group, satNo) {
   const hit = S.hits.find(r => r.satNo === satNo);
   if (hit) return hit.name;
-  const cached = (group.names || {})[satNo];
+  const cached = group.names?.[satNo];
   return cached || `OBJECT ${satNo}`;
 }
 
@@ -180,6 +186,12 @@ async function loadGroups() {
     show("groupsmsg", `Could not load groups: ${err.message}`, true);
   }
   drawGroups();
+}
+
+function groupCountLabel(count) {
+  if (!count) return "";
+  const plural = count === 1 ? "" : "s";
+  return `${count} group${plural} will be rendered`;
 }
 
 function drawGroups() {
@@ -197,9 +209,7 @@ function drawGroups() {
     </div>`).join("") ||
     '<p class="note">No groups yet. Build one from the catalogue on the left.</p>';
   el("runbtn").disabled = S.groups.length === 0;
-  el("groupcount").textContent = S.groups.length
-    ? `${S.groups.length} group${S.groups.length === 1 ? "" : "s"} will be rendered`
-    : "";
+  el("groupcount").textContent = groupCountLabel(S.groups.length);
 }
 
 async function archiveGroup(id) {
@@ -219,6 +229,12 @@ async function archiveGroup(id) {
  * provider that is spelled differently returns nothing and never appears in a
  * report. This asks the UDL for one record per provider and says which
  * answered, rather than leaving it to be discovered by absence. */
+function chipTitle(result) {
+  if (result.available) return `UDL source ${result.udlSource}: answered`;
+  const because = result.error ? " - " + result.error : "";
+  return `UDL source ${result.udlSource}: no data${because}`;
+}
+
 async function probeSources() {
   const btn = el("probebtn");
   const msg = el("probemsg");
@@ -238,9 +254,7 @@ async function probeSources() {
       if (!chip) return;
       chip.classList.toggle("confirmed", r.available);
       chip.classList.toggle("gone", !r.available);
-      chip.title = r.available
-        ? `UDL source ${r.udlSource}: answered`
-        : `UDL source ${r.udlSource}: no data${r.error ? " - " + r.error : ""}`;
+      chip.title = chipTitle(r);
       if (!r.available) gone.push(r.label);
     });
     const subject = body.satNo ? ` (probed with NORAD ${body.satNo})` : "";
@@ -277,7 +291,7 @@ function selectedSources() {
 async function startRun() {
   const body = {
     groupIds: [],
-    days: Math.max(1, Math.min(90, parseInt(el("days").value, 10) || 7)),
+    days: Math.max(1, Math.min(90, Number.parseInt(el("days").value, 10) || 7)),
     modes: selectedModes(),
     sources: selectedSources(),
     invert: el("invert").classList.contains("active")
@@ -318,6 +332,13 @@ function pollRun() {
   tick();
 }
 
+function progressDetail(job) {
+  const p = job.progress || {};
+  if (!p.total) return "";
+  const where = p.current ? " \u00b7 " + p.current : "";
+  return ` ${p.done}/${p.total}${where}`;
+}
+
 function drawRun() {
   const j = S.run;
   if (!j) return;
@@ -327,10 +348,8 @@ function drawRun() {
   if (j.status === "done") {
     return show("runmsg", "Report ready. Opening the Report tab.");
   }
-  const p = j.progress || {};
-  const detail = p.total ? ` ${p.done}/${p.total}${p.current ? ` · ${p.current}` : ""}` : "";
   el("runmsg").innerHTML =
-    `<div class="note"><span class="spin"></span>${esc(j.status)}${esc(detail)}</div>`;
+    `<div class="note"><span class="spin"></span>${esc(j.status)}${esc(progressDetail(j))}</div>`;
 }
 
 function openReport(url) {

@@ -40,7 +40,7 @@ import numpy as np
 from sgp4.api import Satrec, jday
 
 from .errors import ComputeError, ConfigError
-from .models import ELSET_KEY, Elset, StateVector
+from .models import ELSET_KEY, StateVector
 
 
 # --------------------------------------------------------------------------- #
@@ -59,7 +59,22 @@ def _astropy():
             "State vectors in a non-TEME frame need astropy to convert to TEME. "
             "Install astropy, or request TEME from the UDL."
         ) from exc
+    # Returned under lowercase names: these are locals, and a local spelled
+    # like a class trips the naming rule without making anything clearer.
     return u, Time, GCRS, TEME, CartesianRepresentation
+
+
+class _Astropy:
+    """The handful of astropy names this module uses, bound once."""
+
+    __slots__ = ("cartesian", "gcrs", "teme", "time", "units")
+
+    def __init__(self, units, time, gcrs, teme, cartesian):
+        self.units = units
+        self.time = time
+        self.gcrs = gcrs
+        self.teme = teme
+        self.cartesian = cartesian
 
 
 def _gcrs_to_teme(epochs: list, rows: np.ndarray) -> np.ndarray:
@@ -68,10 +83,10 @@ def _gcrs_to_teme(epochs: list, rows: np.ndarray) -> np.ndarray:
     J2000/GCRF is treated as GCRS, exactly as the original single-vector path
     did. One astropy call for the whole block.
     """
-    u, Time, GCRS, TEME, CartesianRepresentation = _astropy()
-    t = Time(list(epochs), scale="utc")
-    src = GCRS(CartesianRepresentation((rows * u.km).T), obstime=t)
-    out = src.transform_to(TEME(obstime=t)).cartesian.xyz.to(u.km).value
+    ap = _Astropy(*_astropy())
+    when = ap.time(list(epochs), scale="utc")
+    src = ap.gcrs(ap.cartesian((rows * ap.units.km).T), obstime=when)
+    out = src.transform_to(ap.teme(obstime=when)).cartesian.xyz.to(ap.units.km).value
     return np.atleast_2d(out.T)
 
 
@@ -191,7 +206,7 @@ def _state_offsets(svs: list, ref_sat: Satrec, sign: float) -> list:
     r_ref, v_ref = propagate_batch(ref_sat, epochs)
     r_obs = to_teme_batch(ordered)
     offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
-    return list(zip(epochs, offsets))
+    return list(zip(epochs, offsets, strict=True))
 
 
 def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
@@ -207,7 +222,7 @@ def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
     r_ref, v_ref = propagate_batch(ref_sat, epochs)
     r_obs = np.array([propagate(e.satrec(), e.epoch)[0] for e in ordered])
     offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
-    return list(zip(epochs, offsets))
+    return list(zip(epochs, offsets, strict=True))
 
 
 def compute_series(obj, ref_sat, invert: bool) -> dict:

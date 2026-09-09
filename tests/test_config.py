@@ -112,7 +112,8 @@ def _in_git_worktree() -> bool:
     import subprocess
     try:
         done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                              cwd=_root(), capture_output=True, text=True)
+                              cwd=_root(), capture_output=True, text=True,
+                              check=False)
     except (OSError, FileNotFoundError):
         return False
     return done.returncode == 0 and done.stdout.strip() == "true"
@@ -143,10 +144,12 @@ def test_the_coverage_configuration_ships_with_the_package():
 def test_the_coverage_configuration_is_not_git_ignored():
     import subprocess
     ignored = subprocess.run(["git", "check-ignore", "pytest.ini"],
-                             cwd=_root(), capture_output=True, text=True)
+                             cwd=_root(), capture_output=True, text=True,
+                              check=False)
     assert ignored.returncode != 0, "pytest.ini is git-ignored and will not ship"
     tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "pytest.ini"],
-                             cwd=_root(), capture_output=True, text=True)
+                             cwd=_root(), capture_output=True, text=True,
+                              check=False)
     assert tracked.returncode == 0, "pytest.ini is not tracked and will not ship"
 
 
@@ -156,7 +159,8 @@ def test_credential_files_are_still_ignored():
     import subprocess
     for name in ("credentials.ini", "secrets.ini", "udl-credentials.ini"):
         done = subprocess.run(["git", "check-ignore", name],
-                              cwd=_root(), capture_output=True, text=True)
+                              cwd=_root(), capture_output=True, text=True,
+                              check=False)
         assert done.returncode == 0, f"{name} is not ignored"
 
 

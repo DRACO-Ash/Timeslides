@@ -20,7 +20,7 @@ from timeslides.api import create_app
 from timeslides.config import Settings
 
 pytest.importorskip("playwright.sync_api")
-from playwright.sync_api import sync_playwright  # noqa: E402
+from playwright.sync_api import sync_playwright
 
 pytestmark = pytest.mark.browser
 

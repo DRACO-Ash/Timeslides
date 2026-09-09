@@ -10,7 +10,7 @@ about HTTP or the command line.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .audit import event
 from .errors import ComputeError, ValidationError
@@ -154,7 +154,7 @@ def build_report(groups: list, client, spec: RunSpec, progress=None) -> str:
             panels.append(_panel_for_group(len(panels), group, fetcher, spec,
                                            first=not panels))
         except ComputeError as exc:
-            skipped.append(dict(group=group["name"], reason=str(exc)))
+            skipped.append({"group": group["name"], "reason": str(exc)})
             event("run.group_skipped", group=group["name"], reason=str(exc))
     if not panels:
         raise ComputeError(

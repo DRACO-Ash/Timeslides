@@ -70,11 +70,11 @@ def json_for_html(obj) -> str:
             .replace("<", "\\u003c")
             .replace(">", "\\u003e")
             .replace("&", "\\u0026")
-            .replace(" ", "\\u2028")
-            .replace(" ", "\\u2029"))
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _asset(name: str) -> str:
     return (ASSETS / name).read_text(encoding="utf-8")
 
@@ -94,7 +94,7 @@ def _series_stats(series):
         slope = float(np.polyfit(xs, np.array(ys), 1)[0]) * 86400.0
     else:
         slope = 0.0
-    return dict(current=float(ys[-1]), drift=slope, n=len(ys))
+    return {"current": float(ys[-1]), "drift": slope, "n": len(ys)}
 
 
 def _sat_colours(sat_order, ref_no):
@@ -112,7 +112,7 @@ def _sat_colours(sat_order, ref_no):
 # --------------------------------------------------------------------------- #
 #  Datasets
 # --------------------------------------------------------------------------- #
-def _object_traces(obj, sat_no, name, present, series):
+def _object_traces(sat_no, name, present, series):
     """The per-source trace arrays and the summary card for one object."""
     xs, ys, counts, headline = [], [], {}, None
     for key in present:
@@ -122,10 +122,14 @@ def _object_traces(obj, sat_no, name, present, series):
         counts[key] = len(ser)
         if headline is None and ser:
             headline = _series_stats(ser)
-    primary = headline or dict(current=0.0, drift=0.0, n=0)
-    card = dict(norad=sat_no, name=name, current=primary["current"],
-                drift=primary["drift"], counts=counts,
-                absent=all(v == 0 for v in counts.values()))
+    primary = headline or {"current": 0.0, "drift": 0.0, "n": 0}
+    card = {
+        "norad": sat_no,
+        "name": name,
+        "current": primary["current"],
+        "drift": primary["drift"],
+        "counts": counts,
+        "absent": all(v == 0 for v in counts.values())}
     return xs, ys, card
 
 
@@ -140,15 +144,19 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
         obj = objects_by_sat.get(s)
         nm = names.get(s, f"OBJECT {s}")
         series = compute_series(obj, ref_sat, invert) if obj else {}
-        obj_xs, obj_ys, card = _object_traces(obj, s, nm, present, series)
+        obj_xs, obj_ys, card = _object_traces(s, nm, present, series)
         xs.extend(obj_xs)
         ys.extend(obj_ys)
         colours.extend([colour[s]] * len(present))
         card.update(colour=colour[s], is_ref=(s == ref_no))
         cards.append(card)
     _r0, v0 = propagate(ref_sat, window[0])
-    return dict(x=xs, y=ys, colours=colours, cards=cards,
-                vkms=round(float(np.linalg.norm(v0)), 3))
+    return {
+        "x": xs,
+        "y": ys,
+        "colours": colours,
+        "cards": cards,
+        "vkms": round(float(np.linalg.norm(v0)), 3)}
 
 
 # --------------------------------------------------------------------------- #
@@ -157,30 +165,57 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
 def _marker(key, colour):
     symbol = SRC_SYMBOL.get(key, "circle")
     is_open = symbol.endswith("-open")
-    return dict(symbol=symbol, size=(8 if is_open else 7), color=colour,
-                opacity=0.95,
-                line=dict(width=1.4 if is_open else 0, color=colour))
+    return {
+        "symbol": symbol,
+        "size": 8 if is_open else 7,
+        "color": colour,
+        "opacity": 0.95,
+        "line": {"width": 1.4 if is_open else 0, "color": colour}}
 
 
 def _layout():
-    return dict(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#8FA0BE", family="ui-monospace,'SF Mono',Menlo,Consolas,monospace",
-                  size=12),
-        showlegend=False, autosize=True, margin=dict(l=64, r=24, t=16, b=52),
-        hoverlabel=dict(bgcolor="#111a30", bordercolor="#385FAF",
-                        font=dict(color="#E6ECF5",
-                                  family="ui-monospace,Menlo,monospace", size=12)),
-        xaxis=dict(title=dict(text="PHASE OFFSET  ·  seconds along-track",
-                              font=dict(size=11, color="#6C7C9C")),
-                   gridcolor="rgba(115,155,207,0.10)", zeroline=True,
-                   zerolinecolor="rgba(198,124,0,0.55)", zerolinewidth=1.5,
-                   tickfont=dict(size=11), showline=False),
-        yaxis=dict(title=dict(text="EPOCH (UTC)", font=dict(size=11, color="#6C7C9C")),
-                   autorange="reversed", gridcolor="rgba(115,155,207,0.10)",
-                   tickfont=dict(size=11), showline=False),
-        dragmode="pan",
-    )
+    """The figure layout. Values as the original set them; only the dict
+    literals are formatted differently."""
+    # Not shared between the two axes: plotly holds what it is given, and a
+    # dict reused across both would let a mutation of one change the other.
+    grid = "rgba(115,155,207,0.10)"
+    mono = "ui-monospace,Menlo,monospace"
+    return {
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "font": {
+            "color": "#8FA0BE",
+            "family": "ui-monospace,'SF Mono',Menlo,Consolas,monospace",
+            "size": 12,
+        },
+        "showlegend": False,
+        "autosize": True,
+        "margin": {"l": 64, "r": 24, "t": 16, "b": 52},
+        "hoverlabel": {
+            "bgcolor": "#111a30",
+            "bordercolor": "#385FAF",
+            "font": {"color": "#E6ECF5", "family": mono, "size": 12},
+        },
+        "xaxis": {
+            "title": {"text": "PHASE OFFSET  \u00b7  seconds along-track",
+                      "font": {"size": 11, "color": "#6C7C9C"}},
+            "gridcolor": grid,
+            "zeroline": True,
+            "zerolinecolor": "rgba(198,124,0,0.55)",
+            "zerolinewidth": 1.5,
+            "tickfont": {"size": 11},
+            "showline": False,
+        },
+        "yaxis": {
+            "title": {"text": "EPOCH (UTC)",
+                      "font": {"size": 11, "color": "#6C7C9C"}},
+            "autorange": "reversed",
+            "gridcolor": grid,
+            "tickfont": {"size": 11},
+            "showline": False,
+        },
+        "dragmode": "pan",
+    }
 
 
 def _figure(sat_order, present, names, ds, div_id, first):
@@ -202,9 +237,9 @@ def _figure(sat_order, present, names, ds, div_id, first):
                 name=f"{s} {key}", marker=_marker(key, colr),
                 hovertemplate=(f"<b>{esc(nm)}</b> · {s}<br>{esc(SRC_LABEL.get(key, key))}<br>"
                                "%{y|%d %b %H:%M}Z<br>offset %{x:.1f} s<extra></extra>")))
-            traces.append(dict(obj=s, source=key))
+            traces.append({"obj": s, "source": key})
     fig.update_layout(**_layout())
-    plot_div = fig.to_html(full_html=False, include_plotlyjs=(True if first else False),
+    plot_div = fig.to_html(full_html=False, include_plotlyjs=bool(first),
                            div_id=div_id, default_width="100%", default_height="100%",
                            config={"displaylogo": False, "responsive": True,
                                    "scrollZoom": True,
@@ -245,7 +280,7 @@ def _mode_dataset(by_sat, sat_order, present, names, ref_epoch, invert, window):
         except ComputeError:
             continue
         ref_sets[str(s)] = ds
-        refs.append(dict(norad=s, name=names.get(s, f"OBJECT {s}")))
+        refs.append({"norad": s, "name": names.get(s, f"OBJECT {s}")})
     return refs, ref_sets
 
 
@@ -260,7 +295,7 @@ def _mode_data(objects_by_mode, mode_order, sat_order, present, names,
         if not ref_sets:
             continue
         dref = default_ref if str(default_ref) in ref_sets else refs[0]["norad"]
-        out[mlabel] = dict(refData=ref_sets, refs=refs, defaultRef=dref)
+        out[mlabel] = {"refData": ref_sets, "refs": refs, "defaultRef": dref}
     if not out:
         raise ComputeError(f"[{name}] no usable data in any requested mode.")
     return out
@@ -283,19 +318,28 @@ def build_panel(panel_id, name, sat_order, names, objects_by_mode, mode_order,
     md0 = mode_data[first_mode]
     seed = md0["refData"][str(md0["defaultRef"])]
     plot_div, traces = _figure(sat_order, present, names, seed, div_id, first)
-    present_meta = [dict(key=k, label=SRC_LABEL.get(k, k),
-                         shape=SRC_SHAPE.get(SRC_SYMBOL.get(k, "circle"), "mk-circle"))
+    present_meta = [{
+        "key": k,
+        "label": SRC_LABEL.get(k, k),
+        "shape": SRC_SHAPE.get(SRC_SYMBOL.get(k, "circle"), "mk-circle")}
                     for k in present]
 
-    return dict(
-        id=panel_id, name=name, div_id=div_id, plot_div=plot_div, traces=traces,
-        present=present, presentMeta=present_meta,
-        modeData=mode_data, modeOrder=[m for m in mode_order if m in mode_data],
-        defaultMode=first_mode, defaultRef=md0["defaultRef"], v_kms=seed["vkms"],
-        window_start=window[0].strftime("%d %b %Y %H:%MZ"),
-        window_end=window[1].strftime("%d %b %Y %H:%MZ"),
-        source=" · ".join(SRC_LABEL.get(k, k) for k in present),
-    )
+    return {
+        "id": panel_id,
+        "name": name,
+        "div_id": div_id,
+        "plot_div": plot_div,
+        "traces": traces,
+        "present": present,
+        "presentMeta": present_meta,
+        "modeData": mode_data,
+        "modeOrder": [m for m in mode_order if m in mode_data],
+        "defaultMode": first_mode,
+        "defaultRef": md0["defaultRef"],
+        "v_kms": seed["vkms"],
+        "window_start": window[0].strftime("%d %b %Y %H:%MZ"),
+        "window_end": window[1].strftime("%d %b %Y %H:%MZ"),
+        "source": " · ".join(SRC_LABEL.get(k, k) for k in present)}
 
 
 # --------------------------------------------------------------------------- #
@@ -386,19 +430,24 @@ def _tab_buttons(panels) -> str:
 
 def _report_payload(panels) -> str:
     """The data the client-side code reads, as an escaped JSON block."""
-    groups = [dict(id=p["id"], divId=p["div_id"], traces=p["traces"],
-                   present=p["present"], modeData=p["modeData"],
-                   modeOrder=p["modeOrder"], defaultMode=p["defaultMode"],
-                   defaultRef=p["defaultRef"])
+    groups = [{
+        "id": p["id"],
+        "divId": p["div_id"],
+        "traces": p["traces"],
+        "present": p["present"],
+        "modeData": p["modeData"],
+        "modeOrder": p["modeOrder"],
+        "defaultMode": p["defaultMode"],
+        "defaultRef": p["defaultRef"]}
               for p in panels]
-    return json_for_html(dict(groups=groups, srclbl=SRC_LABEL))
+    return json_for_html({"groups": groups, "srclbl": SRC_LABEL})
 
 
 def render_report(panels, classification: str, generated: dt.datetime | None = None) -> str:
     """Assemble the multi-group tabbed report into one self-contained HTML string."""
     if not panels:
         raise ComputeError("nothing to render: no panels were built")
-    when = generated or dt.datetime.now(dt.timezone.utc)
+    when = generated or dt.datetime.now(dt.UTC)
     stamp = when.strftime("%d %b %Y %H:%M:%SZ")
     plural = "S" if len(panels) != 1 else ""
     body = f"""

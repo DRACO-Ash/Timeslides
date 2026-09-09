@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 
 import numpy as np
 import pytest
 
 from tests.conftest import FakeResponse, sv_record
-from timeslides import audit
 from timeslides.errors import ConfigError, UpstreamError
 from timeslides.udl import UDLClient, elset_to_tle, parse_epoch
 
@@ -23,8 +21,10 @@ END = dt.datetime(2026, 7, 1)
 # --------------------------------------------------------------------------- #
 def test_the_client_refuses_to_build_without_credentials(tmp_path, instant_bucket):
     from timeslides.config import Settings
+    settings = Settings(storage_path=tmp_path)
+    session = object()
     with pytest.raises(ConfigError, match="UDL_USER and UDL_PASS"):
-        UDLClient(Settings(storage_path=tmp_path), session=object(), bucket=instant_bucket)
+        UDLClient(settings, session=session, bucket=instant_bucket)
 
 
 # --------------------------------------------------------------------------- #

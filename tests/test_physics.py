@@ -201,7 +201,7 @@ def test_reference_object_without_tles_raises_compute_error(demo_objects):
     stripped = [o for o in demo_objects if o.sat_no != 59884]
     bare = type(obj)(sat_no=59884, name=obj.name, colour=obj.colour)
     with pytest.raises(ComputeError, match="no TLEs to anchor"):
-        physics.reference_satrec(stripped + [bare], 59884, None)
+        physics.reference_satrec([*stripped, bare], 59884, None)
 
 
 def test_sgp4_failure_surfaces_as_compute_error_not_systemexit():
@@ -257,7 +257,7 @@ def test_inverting_the_sign_negates_every_point(demo_objects, ref_sat):
     plain = physics.compute_series(obj, ref_sat, False)
     flipped = physics.compute_series(obj, ref_sat, True)
     for key in plain:
-        for (e1, v1), (e2, v2) in zip(plain[key], flipped[key]):
+        for (e1, v1), (e2, v2) in zip(plain[key], flipped[key], strict=True):
             assert e1 == e2
             assert v1 == -v2
 

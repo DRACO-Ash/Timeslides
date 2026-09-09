@@ -19,6 +19,7 @@ Two protections the original script did not need:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import threading
 import uuid
@@ -33,7 +34,7 @@ MAX_REMEMBERED = 50
 
 
 def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Job:
@@ -49,14 +50,19 @@ class Job:
         self.finished = None
         self.error = None
         self.path = None
-        self.progress = dict(done=0, total=0, current="")
+        self.progress = {"done": 0, "total": 0, "current": ""}
 
     def as_dict(self) -> dict:
-        return dict(id=self.id, status=self.status, label=self.label,
-                    created=self.created, started=self.started,
-                    finished=self.finished, error=self.error,
-                    progress=dict(self.progress),
-                    reportUrl=f"/api/runs/{self.id}/report" if self.status == DONE else None)
+        return {
+            "id": self.id,
+            "status": self.status,
+            "label": self.label,
+            "created": self.created,
+            "started": self.started,
+            "finished": self.finished,
+            "error": self.error,
+            "progress": dict(self.progress),
+            "reportUrl": f"/api/runs/{self.id}/report" if self.status == DONE else None}
 
 
 class JobRunner:
@@ -103,7 +109,7 @@ class JobRunner:
     def _progress(self, job):
         def report(current, done, total):
             with self._lock:
-                job.progress = dict(done=done, total=total, current=safe(current, 80))
+                job.progress = {"done": done, "total": total, "current": safe(current, 80)}
         return report
 
     def _execute(self, job) -> None:
@@ -115,7 +121,7 @@ class JobRunner:
             path = self._write(job.id, html)
         except TimeslidesError as exc:
             self._fail(job, f"{type(exc).__name__}: {exc}")
-        except Exception as exc:                        # noqa: BLE001
+        except Exception as exc:
             # An unexpected error must still land on the job rather than
             # vanishing into a worker thread, or the page polls a run that
             # never resolves.
@@ -174,10 +180,8 @@ class JobRunner:
             if self._by_key.get(oldest.spec.key()) == oldest.id:
                 self._by_key.pop(oldest.spec.key(), None)
             if oldest.path is not None:
-                try:
+                with contextlib.suppress(OSError):
                     oldest.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def shutdown(self, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait)

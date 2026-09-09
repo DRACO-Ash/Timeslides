@@ -12,11 +12,11 @@ Route notes that matter for the platform:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import audit
 from .audit import event
@@ -24,8 +24,8 @@ from .config import Settings, load_settings
 from .errors import TimeslidesError, ValidationError
 from .groups import GroupStore
 from .jobs import DONE, JobRunner
-from .models import (DATA_MODES, ELSET_KEY, ELSET_LABEL, SRC_LABEL, SRC_SHAPE,
-                     SRC_SYMBOL, STATE_SOURCES, STATE_SOURCE_KEYS)
+from .models import (DATA_MODES, ELSET_KEY, ELSET_LABEL, SRC_SHAPE, SRC_SYMBOL,
+                     STATE_SOURCES, STATE_SOURCE_KEYS)
 from .pipeline import (MAX_GROUPS_PER_RUN, MAX_WINDOW_DAYS, RunSpec, build_report,
                        demo_report, validate_modes, validate_sources, validate_window)
 from .shell import render_shell
@@ -42,7 +42,13 @@ class GroupBody(BaseModel):
 
 
 class RunBody(BaseModel):
-    groupIds: list = Field(default_factory=list, max_length=MAX_GROUPS_PER_RUN)
+    # snake_case in Python, camelCase on the wire. populate_by_name keeps both
+    # spellings acceptable in a request body so nothing already calling this
+    # breaks.
+    model_config = ConfigDict(populate_by_name=True)
+
+    group_ids: list = Field(default_factory=list, alias="groupIds",
+                            max_length=MAX_GROUPS_PER_RUN)
     days: int = Field(default=7, ge=1, le=MAX_WINDOW_DAYS)
     start: Optional[dt.datetime] = None
     end: Optional[dt.datetime] = None
@@ -55,11 +61,11 @@ class RunBody(BaseModel):
 def _naive_utc(when: dt.datetime) -> dt.datetime:
     if when.tzinfo is None:
         return when.replace(microsecond=0)
-    return when.astimezone(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+    return when.astimezone(dt.UTC).replace(tzinfo=None, microsecond=0)
 
 
 def _window(body: RunBody) -> tuple:
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None, microsecond=0)
     end = _naive_utc(body.end) if body.end else now
     start = _naive_utc(body.start) if body.start else end - dt.timedelta(days=body.days)
     return validate_window(start, end)
@@ -94,7 +100,7 @@ def create_app(settings: Settings = None, store=None, runner=None,
     app.state.runner = runner
 
     _register_error_handler(app)
-    _register_ui(app, settings, store)
+    _register_ui(app, settings)
     _register_groups(app, store)
     _register_catalogue(app, settings, _client)
     _register_sources(app, settings, store, _client)
@@ -135,7 +141,7 @@ def _register_error_handler(app: FastAPI) -> None:
 # --------------------------------------------------------------------------- #
 #  UI and health
 # --------------------------------------------------------------------------- #
-def _register_ui(app: FastAPI, settings: Settings, store) -> None:
+def _register_ui(app: FastAPI, settings: Settings) -> None:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         """The shell, and the platform's readiness target. No upstream calls."""
@@ -151,8 +157,10 @@ def _register_ui(app: FastAPI, settings: Settings, store) -> None:
 # --------------------------------------------------------------------------- #
 def _register_groups(app: FastAPI, store) -> None:
     @app.get("/api/groups")
-    async def list_groups(includeArchived: bool = False):
-        return store.load(include_archived=includeArchived)
+    async def list_groups(
+        include_archived: Annotated[bool, Query(alias="includeArchived")] = False,
+    ):
+        return store.load(include_archived=include_archived)
 
     @app.post("/api/groups", status_code=201)
     async def create_group(body: GroupBody):
@@ -163,11 +171,13 @@ def _register_groups(app: FastAPI, store) -> None:
         return store.update(group_id, body.model_dump(), expected_rev=body.rev)
 
     @app.delete("/api/groups/{group_id}")
-    async def archive_group(group_id: str, rev: Optional[int] = None):
+    async def archive_group(group_id: str,
+                            rev: Annotated[Optional[int], Query()] = None):
         return store.archive(group_id, expected_rev=rev)
 
     @app.post("/api/groups/{group_id}/restore")
-    async def restore_group(group_id: str, rev: Optional[int] = None):
+    async def restore_group(group_id: str,
+                            rev: Annotated[Optional[int], Query()] = None):
         return store.restore(group_id, expected_rev=rev)
 
 
@@ -176,8 +186,10 @@ def _register_groups(app: FastAPI, store) -> None:
 # --------------------------------------------------------------------------- #
 def _register_catalogue(app: FastAPI, settings: Settings, client_for) -> None:
     @app.get("/api/catalogue")
-    async def search(q: str = Query("", max_length=120),
-                     limit: int = Query(50, ge=1, le=200)):
+    async def search(
+        q: Annotated[str, Query(max_length=120)] = "",
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ):
         if settings.demo:
             return {"results": _demo_catalogue(q, limit), "demo": True}
         results = client_for().search_objects(q, limit=limit)
@@ -199,8 +211,14 @@ def _demo_catalogue(query: str, limit: int) -> list:
         (59102, "SPIDER BABY 1"), (59103, "SPIDER BABY 2"),
     ]
     text = (query or "").strip().upper()
-    rows = [dict(satNo=n, name=name, intlDes=None, country=None,
-                 objectType="PAYLOAD", launchDate=None, decayDate=None)
+    rows = [{
+        "satNo": n,
+        "name": name,
+        "intlDes": None,
+        "country": None,
+        "objectType": "PAYLOAD",
+        "launchDate": None,
+        "decayDate": None}
             for n, name in catalogue
             if not text or text in name.upper() or text in str(n)]
     return rows[:limit]
@@ -211,14 +229,23 @@ def _demo_catalogue(query: str, limit: int) -> list:
 # --------------------------------------------------------------------------- #
 def _source_rows() -> list:
     """The provider list, server-side, so the UI never keeps its own copy."""
-    rows = [dict(key=s["key"], label=s["label"], udlSource=s["udl_source"],
-                 symbol=s["symbol"], shape=SRC_SHAPE.get(s["symbol"], "mk-circle"),
-                 frame=s["frame"], kind="state")
+    rows = [{
+        "key": s["key"],
+        "label": s["label"],
+        "udlSource": s["udl_source"],
+        "symbol": s["symbol"],
+        "shape": SRC_SHAPE.get(s["symbol"], "mk-circle"),
+        "frame": s["frame"],
+        "kind": "state"}
             for s in STATE_SOURCES]
-    rows.append(dict(key=ELSET_KEY, label=ELSET_LABEL, udlSource=None,
-                     symbol=SRC_SYMBOL[ELSET_KEY],
-                     shape=SRC_SHAPE[SRC_SYMBOL[ELSET_KEY]], frame="TEME",
-                     kind="elset"))
+    rows.append({
+        "key": ELSET_KEY,
+        "label": ELSET_LABEL,
+        "udlSource": None,
+        "symbol": SRC_SYMBOL[ELSET_KEY],
+        "shape": SRC_SHAPE[SRC_SYMBOL[ELSET_KEY]],
+        "frame": "TEME",
+        "kind": "elset"})
     return rows
 
 
@@ -230,22 +257,29 @@ def _register_sources(app: FastAPI, settings: Settings, store, client_for) -> No
                 "elsetKey": ELSET_KEY, "demo": settings.demo}
 
     @app.get("/api/sources/probe")
-    async def probe_sources(satNo: Optional[int] = Query(None, ge=1, le=999_999_999),
-                            days: int = Query(7, ge=1, le=MAX_WINDOW_DAYS)):
+    async def probe_sources(
+        sat_no: Annotated[Optional[int],
+                          Query(alias="satNo", ge=1, le=999_999_999)] = None,
+        days: Annotated[int, Query(ge=1, le=MAX_WINDOW_DAYS)] = 7,
+    ):
         """Ask the UDL which providers actually answer for a real object.
 
         The udl_source strings are names, not values read back from a tenant, so
         a provider that is spelled differently returns nothing and silently
         never appears in a report. This makes that visible.
         """
-        end = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+        end = dt.datetime.now(dt.UTC).replace(tzinfo=None, microsecond=0)
         start = end - dt.timedelta(days=days)
-        sat_no = satNo or _probe_subject(store)
+        sat_no = sat_no or _probe_subject(store)
         if settings.demo:
             return {"satNo": sat_no, "demo": True,
-                    "results": [dict(key=s["key"], label=s["label"],
-                                     udlSource=s["udl_source"], available=True,
-                                     records=1, error=None) for s in STATE_SOURCES]}
+                    "results": [{
+                        "key": s["key"],
+                        "label": s["label"],
+                        "udlSource": s["udl_source"],
+                        "available": True,
+                        "records": 1,
+                        "error": None} for s in STATE_SOURCES]}
         return {"satNo": sat_no, "demo": False,
                 "results": client_for().probe_sources(sat_no, start, end)}
 
@@ -267,7 +301,7 @@ def _register_runs(app: FastAPI, settings: Settings, store, runner) -> None:
     @app.post("/api/runs", status_code=202)
     async def start_run(body: RunBody):
         start, end = _window(body)
-        groups = _resolve_groups(store, body.groupIds, settings.demo)
+        groups = _resolve_groups(store, body.group_ids, settings.demo)
         spec = RunSpec(group_ids=tuple(g["id"] for g in groups),
                        start=start, end=end,
                        modes=validate_modes(body.modes),

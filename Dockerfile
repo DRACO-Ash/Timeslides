@@ -1,14 +1,26 @@
-# Base image: the internal mirror, at the tag the platform's own runners use
-# (the job log shows repository-runner pulling
-# registry.bluestaq.com/container/library/python:3.12-slim). Builders in this
-# environment mirror rather than reach Docker Hub, so a docker.io reference
-# fails to resolve. INFERENCE about the builders' egress, but well founded: the
-# mirror exists and the runner pulls from it.
+# Base image: reference Docker Hub and let the platform's mirror rewrite it.
 #
-# Note also that with requirements.txt present the App Store auto-detects the
-# python template and may build the image from that template rather than from
-# this file. This Dockerfile is the fallback and the record of what the image
-# must satisfy either way.
+# The pipeline's containerize stage writes a registry mirror rule before it
+# builds anything:
+#
+#     [[registry]]
+#     prefix   = "docker.io"
+#     location = "registry.bluestaq.com/<mirror>"
+#
+# so a docker.io reference is redirected to Harbor and never leaves the estate.
+# Naming the internal registry directly does NOT work: that prefix rule only
+# matches docker.io, so an explicit registry.bluestaq.com reference bypasses
+# the mirror and is resolved directly, and the build container has no DNS for
+# that host ("no such host", exit 125). An earlier revision of this file made
+# exactly that mistake.
+#
+# Fully qualified rather than the bare `python:3.12-slim`, because a short name
+# goes through the builder's unqualified-search-registries list, which is not
+# guaranteed to be configured. `docker.io/library/...` matches the mirror
+# prefix unambiguously.
+#
+# The tag is known good: the platform's own runner uses
+# docker.io/library/python:3.12-slim through this same mirror.
 #
 # Two rules from the App Store container image policy shape this file.
 #
@@ -30,7 +42,7 @@
 # --------------------------------------------------------------------------- #
 #  Stage 1: wheels
 # --------------------------------------------------------------------------- #
-FROM registry.bluestaq.com/container/library/python:3.12-slim AS build
+FROM docker.io/library/python:3.12-slim AS build
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -53,7 +65,7 @@ RUN python -m venv /opt/venv \
 # --------------------------------------------------------------------------- #
 #  Stage 2: the rootfs, cleaned
 # --------------------------------------------------------------------------- #
-FROM registry.bluestaq.com/container/library/python:3.12-slim AS prep
+FROM docker.io/library/python:3.12-slim AS prep
 
 COPY --from=build /opt/venv /opt/venv
 WORKDIR /app
@@ -64,25 +76,17 @@ COPY timeslides ./timeslides
 # attached over it is writable by uid 1000 even before fsGroup applies.
 RUN install -d -o 1000 -g 1000 -m 0770 /data
 
-# Strip every setuid and setgid bit and every capability-bearing binary the
-# base image ships. The policy rejects an image carrying any of them, and none
-# of them are reachable from a process that serves HTTP and calls one API.
-RUN set -eux; \
-    find / -xdev -perm /6000 -type f -exec chmod -s {} + 2>/dev/null || true; \
-    rm -rf /usr/bin/passwd /usr/bin/chsh /usr/bin/chfn /usr/bin/newgrp \
-           /usr/bin/gpasswd /usr/bin/su /bin/su /usr/bin/mount /usr/bin/umount \
-           /sbin/unix_chkpwd /usr/sbin/unix_chkpwd 2>/dev/null || true; \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt /var/cache/debconf \
-           /usr/share/doc /usr/share/man /usr/share/info /tmp/* /root/.cache; \
-    find / -xdev -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true; \
-    find / -xdev -name '*.pyc' -delete 2>/dev/null || true; \
-    chown -R 1000:1000 /app; \
-    # Prove the strip worked before the flatten, so a policy failure surfaces
-    # here with a readable message rather than at the container-scan stage.
-    remaining="$(find / -xdev -perm /6000 -type f 2>/dev/null || true)"; \
-    if [ -n "$remaining" ]; then \
-      echo "setuid/setgid files remain after strip:"; echo "$remaining"; exit 1; \
-    fi
+# Strip every setuid and setgid bit the base image ships. The policy rejects an
+# image carrying any of them, and none are reachable from a process that serves
+# HTTP and calls one API.
+#
+# The last three lines re-scan and fail the build if anything survived, so a
+# policy problem surfaces here with a readable message instead of at the
+# container-scan stage. The script is carried in a file rather than inline
+# because a `#` comment inside a RUN continuation is parser-dependent, and this
+# builder is buildah rather than BuildKit.
+COPY docker/harden.sh /tmp/harden.sh
+RUN sh /tmp/harden.sh && rm -f /tmp/harden.sh
 
 # --------------------------------------------------------------------------- #
 #  Stage 3: one flat layer

@@ -51,15 +51,17 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # The groups that lived in the committed credentials.ini, kept so the move to
 # the new store loses nothing. Seeded once, on first boot with an empty store.
 SEED_GROUPS = [
-    dict(name="SPIDER BABIES w/ICEYE",
-         sats=[68764, 68763, 68762, 68759, 68754, 59102, 59103], reference=68762),
-    dict(name="COSMOS 2581/82/83", sats=[62902, 62903, 62904], reference=62902),
-    dict(name="PRC SpacePlane 4", sats=[67689, 69673, 59884, 99995], reference=67689),
+    {
+        "name": "SPIDER BABIES w/ICEYE",
+        "sats": [68764, 68763, 68762, 68759, 68754, 59102, 59103],
+        "reference": 68762},
+    {"name": "COSMOS 2581/82/83", "sats": [62902, 62903, 62904], "reference": 62902},
+    {"name": "PRC SpacePlane 4", "sats": [67689, 69673, 59884, 99995], "reference": 67689},
 ]
 
 
 def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --------------------------------------------------------------------------- #
@@ -124,9 +126,14 @@ def clean_group(payload: dict, group_id: str | None = None) -> dict:
         raise ValidationError(
             f"the reference object {reference} is not a member of the group; "
             "the waterfall is anchored on one of its own objects")
-    return dict(id=group_id or str(uuid.uuid4()), name=name, sats=sats,
-                reference=reference, archived=False,
-                created=_now(), updated=_now())
+    return {
+        "id": group_id or str(uuid.uuid4()),
+        "name": name,
+        "sats": sats,
+        "reference": reference,
+        "archived": False,
+        "created": _now(),
+        "updated": _now()}
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +154,7 @@ class GroupStore:
 
     # --- document level ---------------------------------------------------- #
     def _empty(self) -> dict:
-        return dict(rev=0, groups=[])
+        return {"rev": 0, "groups": []}
 
     def _read(self) -> dict:
         if not self.path.exists():
@@ -202,7 +209,7 @@ class GroupStore:
         with self._lock:
             doc = self._read()
         groups = [g for g in doc["groups"] if include_archived or not g.get("archived")]
-        return dict(rev=doc["rev"], groups=groups)
+        return {"rev": doc["rev"], "groups": groups}
 
     def get(self, group_id: str) -> dict:
         for group in self.load(include_archived=True)["groups"]:
