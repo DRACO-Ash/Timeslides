@@ -115,18 +115,3 @@ def build_demo_modes(start, end):
                     [(40001, "CLUSTER LEAD", 0.0), (40002, "CLUSTER TRAIL", -90.0),
                      (40003, "CLUSTER TENDER", 110.0)], 7)
     return [prc, cluster]
-
-
-def build_demo_groups(start, end):
-    """Two synthetic groups so the tabbed layout and re-anchoring are visible."""
-    cluster = _demo_group([
-        (40001, "CLUSTER LEAD", 0.0),
-        (40002, "CLUSTER TRAIL", -140.0),
-        (40003, "CLUSTER TENDER", 70.0),
-    ], start, end, seed=7)
-    return [
-        dict(name="PRC Spaceplane", objects=build_demo(start, end), reference=59884),
-        dict(name="LEO Cluster", objects=cluster, reference=40001),
-    ]
-
-

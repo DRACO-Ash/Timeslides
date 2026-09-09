@@ -267,8 +267,13 @@ def _mode_data(objects_by_mode, mode_order, sat_order, present, names,
 
 
 def build_panel(panel_id, name, sat_order, names, objects_by_mode, mode_order,
-                default_ref, invert, window, tle_source, ref_epoch, first):
-    """Build one group panel across all fetched data modes."""
+                default_ref, invert, window, ref_epoch, first):
+    """Build one group panel across all fetched data modes.
+
+    The original took a `tle_source` argument to choose between Space-Track and
+    the UDL. Element sets now always come from the UDL, so the parameter said
+    nothing and was never read.
+    """
     div_id = f"waterfall_{panel_id}"
     present = _present_sources(objects_by_mode, name)
     mode_data = _mode_data(objects_by_mode, mode_order, sat_order, present, names,

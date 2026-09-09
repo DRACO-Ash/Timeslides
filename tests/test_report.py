@@ -26,7 +26,7 @@ def _panels(groups=None, name_override=None):
         out.append(build_panel(
             pid, name_override or grp["name"], grp["sat_order"], grp["names"],
             grp["objects_by_mode"], ["REAL", "SIM"], grp["reference"],
-            False, (START, END), "udl", None, first=(pid == 0)))
+            False, (START, END), None, first=(pid == 0)))
     return out
 
 
@@ -186,7 +186,7 @@ def test_a_group_with_no_data_at_all_raises_compute_error():
     empty = {"REAL": {1: ObjectData(sat_no=1, name="EMPTY", colour="#fff")}}
     with pytest.raises(ComputeError, match="no state or TLE data"):
         build_panel(0, "Empty", [1], {1: "EMPTY"}, empty, ["REAL"], 1,
-                    False, (START, END), "udl", None, first=True)
+                    False, (START, END), None, first=True)
 
 
 def test_objects_without_tles_cannot_anchor_but_do_not_break_the_panel():
@@ -199,7 +199,7 @@ def test_objects_without_tles_cannot_anchor_but_do_not_break_the_panel():
         by_sat[orphan].elsets = []
     panel = build_panel(0, grp["name"], grp["sat_order"], grp["names"],
                         grp["objects_by_mode"], ["REAL"], grp["reference"],
-                        False, (START, END), "udl", None, first=True)
+                        False, (START, END), None, first=True)
     anchors = {r["norad"] for r in panel["modeData"]["REAL"]["refs"]}
     assert orphan not in anchors
     assert len(anchors) == len(grp["sat_order"]) - 1
@@ -213,7 +213,7 @@ def test_default_reference_falls_back_when_the_requested_one_cannot_anchor():
         by_sat[wanted].elsets = []
     panel = build_panel(0, grp["name"], grp["sat_order"], grp["names"],
                         grp["objects_by_mode"], ["REAL"], wanted,
-                        False, (START, END), "udl", None, first=True)
+                        False, (START, END), None, first=True)
     assert panel["defaultRef"] != wanted
 
 

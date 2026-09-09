@@ -18,9 +18,6 @@ from dataclasses import dataclass, field
 import numpy as np
 from sgp4.api import Satrec
 
-MU = 398600.4418  # km^3/s^2, Earth GM
-
-
 @dataclass
 class StateVector:
     epoch: dt.datetime          # UTC

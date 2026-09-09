@@ -125,7 +125,7 @@ def _panel_for_group(index, group, fetcher, spec, first):
                  else group["sats"][0])
     return build_panel(index, group["name"], group["sats"], fetcher.names,
                        objects_by_mode, list(spec.modes), reference, spec.invert,
-                       (spec.start, spec.end), "udl", spec.ref_epoch, first=first)
+                       (spec.start, spec.end), spec.ref_epoch, first=first)
 
 
 def build_report(groups: list, client, spec: RunSpec, progress=None) -> str:
@@ -176,5 +176,5 @@ def demo_report(spec: RunSpec) -> str:
         panels.append(build_panel(
             index, group["name"], group["sat_order"], group["names"],
             group["objects_by_mode"], ["REAL", "SIM"], group["reference"],
-            spec.invert, (start, end), "udl", spec.ref_epoch, first=(index == 0)))
+            spec.invert, (start, end), spec.ref_epoch, first=(index == 0)))
     return render_report(panels, spec.classification)

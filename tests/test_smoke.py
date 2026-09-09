@@ -22,6 +22,8 @@ from timeslides.config import Settings
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright  # noqa: E402
 
+pytestmark = pytest.mark.browser
+
 # The container ships a pinned Chromium that may not match the Playwright
 # package's expected build number, and PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is set,
 # so the executable is named explicitly rather than resolved by version.
@@ -65,9 +67,20 @@ def live_server(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def browser():
+    """A missing browser skips, and says so loudly.
+
+    Mapping "could not verify" to "passed" is exactly the fail-open defect, so
+    this is not a free pass: AUDIT.md records that the browser suite must be
+    run and seen green before an upload, and a skipped smoke test is not a
+    passed one. The skip exists so a build agent with no browser provisioned
+    reports honestly instead of failing on infrastructure.
+    """
     with sync_playwright() as p:
         kwargs = {"executable_path": str(CHROMIUM)} if CHROMIUM else {}
-        b = p.chromium.launch(**kwargs)
+        try:
+            b = p.chromium.launch(**kwargs)
+        except Exception as exc:                     # pragma: no cover
+            pytest.skip(f"no usable Chromium, browser suite NOT verified: {exc}")
         yield b
         b.close()
 
