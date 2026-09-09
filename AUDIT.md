@@ -147,7 +147,7 @@ That drives the split.
 
 | File | Installed by | Contents |
 |---|---|---|
-| `requirements.txt` | the platform's test stage | runtime, plus pytest, pytest-cov and httpx |
+| `requirements.txt` | the platform's test stage | runtime, plus pytest, pytest-cov, httpx and quickjs |
 | `requirements-runtime.txt` | the container image | runtime only, eight packages |
 | `requirements-dev.txt` | a developer, locally | the platform set plus Playwright |
 
@@ -167,6 +167,43 @@ Five tests guard all of this: that `requirements.txt` declares the runner, that
 `requirements-runtime.txt` carries no test tooling, that the Dockerfile
 installs the runtime set, that the coverage source is pinned, and that the
 Dockerfile never sets `PORT`.
+
+## Testing the browser assets
+
+The gate put line coverage at 79.2% against a threshold of 80% while the Python
+was at 100%. The arithmetic explains it: roughly 320 lines of `report.js` and
+`picker.js` were in the denominator with no coverage data, and no amount of
+Python testing can lift a ratio whose ceiling is about 80.3%.
+
+The honest question that followed was why the JavaScript was not tested. It
+was, but only one way and only sometimes:
+
+● `tests/test_smoke.py` drives it in a real browser, 20 tests over the whole
+  flow. That is the only way to prove the wiring, and it needs a browser, so it
+  skips wherever one is not provisioned, including the platform's test stage.
+
+So it now has unit tests as well. `tests/test_assets_js.py` loads the shipped
+files into a JavaScript engine in process, under pytest, and exercises their
+pure functions: escaping, number formatting, the card fragments, the four
+relative-motion states and their thresholds, and the picker's label helpers.
+56 tests, and they run everywhere the Python tests run, pipeline included. The
+engine is `quickjs`, which publishes a cp312 manylinux wheel, so the slim
+runner needs no compiler.
+
+There is no second copy of the logic: the tests read
+`timeslides/report/assets/*.js` as published. Their teeth were checked by
+mutation, not assumed. Stopping `esc()` escaping `<` fails two tests; inverting
+the closing-versus-separating sign test fails two; swapping the precedence of
+"no data" over "reference datum" fails one.
+
+**Coverage measurement is still not possible.** Sonar reads LCOV for
+JavaScript and this engine does not emit it. The assets are therefore excluded
+from the coverage metric with that rationale recorded in
+`sonar-project.properties`, and they are **not** excluded from analysis: the
+gate raised six findings in them, all fixed, which is the whole reason they are
+real files rather than strings inside Python. If measured JavaScript coverage
+is wanted later, the route is a Node toolchain producing LCOV, which the
+platform's python template does not provide today.
 
 ## Local pre-flight for the quality gate
 

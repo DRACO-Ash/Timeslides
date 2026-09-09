@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -50,12 +52,22 @@ def client(app_bits):
         yield c
 
 
-def _await_run(client, run_id, tries=200):
-    for _ in range(tries):
+def _await_run(client, run_id, timeout=60.0):
+    """Wait on a deadline, not on an iteration count.
+
+    This used to busy-poll a fixed 200 times with no wait, which took well
+    under a second in total. That was long enough for the stub renderer and not
+    long enough for a real one, so the test that drives the app's own renderer
+    failed whenever the render was slower, including under coverage. It would
+    have failed the platform's test stage for the same reason.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         body = client.get(f"/api/runs/{run_id}").json()
         if body["status"] in (DONE, FAILED):
             return body
-    raise AssertionError("run did not finish")
+        time.sleep(0.05)
+    raise AssertionError(f"run {run_id} did not finish within {timeout}s")
 
 
 # --------------------------------------------------------------------------- #
@@ -521,3 +533,119 @@ def test_the_configure_tab_offers_exactly_the_providers_the_report_can_plot(clie
     # The element-set series is not offered as a toggle, because it is always
     # plotted and it anchors the reference orbit.
     assert 'data-source="elset"' not in shell
+
+
+# --------------------------------------------------------------------------- #
+#  The paths the injected fakes normally bypass
+#
+#  The fixtures above inject a renderer and a client so the suite never touches
+#  the UDL. That leaves create_app's own wiring unexercised, and the quality
+#  gate counts those lines like any other. These tests drive the real wiring
+#  with a stub client instead of a stub renderer.
+# --------------------------------------------------------------------------- #
+def test_naive_and_aware_timestamps_both_normalise_to_naive_utc():
+    from timeslides.api import _naive_utc
+    naive = dt.datetime(2026, 6, 24, 12, 30, 0, 123456)
+    assert _naive_utc(naive) == dt.datetime(2026, 6, 24, 12, 30)
+    aware = dt.datetime(2026, 6, 24, 13, 30, tzinfo=dt.timezone(dt.timedelta(hours=1)))
+    assert _naive_utc(aware) == dt.datetime(2026, 6, 24, 12, 30)
+    assert _naive_utc(aware).tzinfo is None
+
+
+def test_the_app_builds_a_real_udl_client_when_none_is_injected(tmp_path, monkeypatch):
+    """create_app's default client factory imports and constructs UDLClient.
+    Verified with the class stubbed, so no session and no network."""
+    built = []
+
+    class StubClient:
+        def __init__(self, settings):
+            built.append(settings)
+
+        def search_objects(self, q, limit=50):
+            return [{"satNo": 1, "name": "STUB"}]
+
+    monkeypatch.setattr("timeslides.udl.UDLClient", StubClient)
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    app = create_app(settings=settings, store=GroupStore(settings.groups_file),
+                     runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
+    with TestClient(app) as c:
+        body = c.get("/api/catalogue", params={"q": "anything"}).json()
+    assert body["results"][0]["name"] == "STUB"
+    assert built and built[0] is settings
+
+
+def test_the_apps_own_renderer_fetches_groups_and_builds_the_report(tmp_path, monkeypatch):
+    """The non-demo render path: look the groups up in the store, then build.
+    Driven with the pipeline's fake client, so still no network."""
+    from tests.test_pipeline import FakeUDL
+
+    monkeypatch.setattr("timeslides.udl.UDLClient", lambda settings: FakeUDL())
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path,
+                        classification="OFFICIAL")
+    store = GroupStore(settings.groups_file)
+    app = create_app(settings=settings, store=store)
+    try:
+        with TestClient(app) as c:
+            # A group whose objects the fake client actually knows about.
+            gid = c.post("/api/groups", json={"name": "Fixture Group",
+                                              "sats": [59884, 67689, 69673],
+                                              "reference": 59884}).json()["id"]
+            run_id = c.post("/api/runs", json={"groupIds": [gid]}).json()["id"]
+            body = _await_run(c, run_id)
+            assert body["status"] == DONE, body.get("error")
+            report = c.get(f"/api/runs/{run_id}/report").text
+            assert "Fixture Group" in report
+            assert "OFFICIAL" in report
+    finally:
+        app.state.runner.shutdown()
+
+
+def test_a_store_that_cannot_be_seeded_logs_and_lets_the_app_start(tmp_path, capsys):
+    """An unwritable volume must not stop the app serving. The operator meets
+    the same problem with a clear message on their first save.
+
+    Read from stdout rather than caplog: create_app calls audit.configure,
+    which installs its own handler and sets propagate to False, so caplog never
+    sees the record. Parsing the emitted line also asserts the real output.
+    """
+    from timeslides.errors import ValidationError
+
+    class UnwritableStore(GroupStore):
+        def seed_if_empty(self, groups=None):
+            raise ValidationError("could not write the group store: fsGroup")
+
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    app = create_app(settings=settings,
+                     store=UnwritableStore(settings.groups_file),
+                     runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
+    with TestClient(app) as c:
+        assert c.get("/").status_code == 200
+        assert c.get("/healthz").status_code == 200
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+             if line.startswith("{")]
+    failures = [line for line in lines if line["msg"] == "boot.seed_failed"]
+    assert len(failures) == 1
+    assert failures[0]["error"] == "ValidationError"
+    assert "fsGroup" in failures[0]["detail"]
+
+
+def test_the_apps_own_renderer_serves_demo_data_in_demo_mode(tmp_path):
+    """The demo branch of the app's own renderer.
+
+    Covered locally by the browser suite, which builds the app with no runner
+    override. That suite skips wherever no browser is provisioned, including
+    the platform's test stage, so this line read as uncovered there. Same path,
+    no browser.
+    """
+    settings = Settings(storage_path=tmp_path, demo=True, classification="OFFICIAL")
+    app = create_app(settings=settings, store=GroupStore(settings.groups_file))
+    try:
+        with TestClient(app) as c:
+            run_id = c.post("/api/runs", json={"days": 7}).json()["id"]
+            body = _await_run(c, run_id, timeout=180.0)
+            assert body["status"] == DONE, body.get("error")
+            report = c.get(f"/api/runs/{run_id}/report").text
+            assert "PRC Spaceplane" in report
+            assert "OFFICIAL" in report
+    finally:
+        app.state.runner.shutdown()

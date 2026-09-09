@@ -10,7 +10,7 @@ import pytest
 
 from timeslides.demo import build_demo_modes
 from timeslides.errors import ComputeError
-from timeslides.models import ObjectData
+from timeslides.models import Elset, ObjectData
 from timeslides.report import builder
 from timeslides.report.builder import build_panel, esc, json_for_html, render_report
 
@@ -232,3 +232,73 @@ def test_write_report_creates_parent_directories(tmp_path, html):
     out = builder.write_report(html, tmp_path / "nested" / "deep" / "r.html")
     assert out.exists()
     assert out.read_text(encoding="utf-8") == html
+
+
+# --------------------------------------------------------------------------- #
+#  Reference anchoring: the paths where a candidate reference is unusable
+# --------------------------------------------------------------------------- #
+# A high drag term with a mean motion near re-entry: SGP4 returns error 1 a few
+# days past epoch, so propagating this object fails rather than merely being
+# absent. That is the difference between "cannot anchor" and "has no data".
+DECAYING_L1 = "1 25544U 98067A   26175.50000000  .00016717  00000-0  99999-1 0  9005"
+DECAYING_L2 = "2 25544  51.6400 208.9163 0006317  69.9862 290.1789 16.49309620 10005"
+
+
+def _with_unpropagatable_reference():
+    """A group where one member can be plotted but cannot anchor the waterfall.
+
+    Its element set is stamped at exactly the epoch inside the two-line set
+    (day 175.5 of 2026, so 24 June 12:00), which means propagating it to its
+    own epoch works and it plots as a member. Anchoring on it means propagating
+    it across the whole window, six days past epoch, where SGP4 returns error
+    1. Stamping it later instead makes even its own point fail, which takes
+    every candidate reference down with it rather than just this one.
+    """
+    groups = build_demo_modes(START, END)
+    grp = groups[0]
+    victim = grp["sat_order"][1]
+    at_epoch = dt.datetime(2026, 6, 24, 12, 0)
+    for by_sat in grp["objects_by_mode"].values():
+        by_sat[victim].elsets = [Elset(epoch=at_epoch, line1=DECAYING_L1,
+                                       line2=DECAYING_L2)]
+    return grp, victim
+
+
+def test_an_object_whose_orbit_cannot_be_propagated_is_dropped_as_an_anchor():
+    """It has element sets, so it is a candidate, but building its dataset
+    raises. The panel keeps the references that do work."""
+    grp, victim = _with_unpropagatable_reference()
+    panel = build_panel(0, grp["name"], grp["sat_order"], grp["names"],
+                        grp["objects_by_mode"], ["REAL"], grp["reference"],
+                        False, (START, END), None, first=True)
+    anchors = {r["norad"] for r in panel["modeData"]["REAL"]["refs"]}
+    assert victim not in anchors
+    assert len(anchors) >= 1
+
+
+def test_a_mode_with_nothing_to_anchor_on_is_skipped_not_fatal():
+    """SIM has state vectors but no element sets, so no reference can be built
+    for it. REAL still renders and the mode selector drops SIM."""
+    groups = build_demo_modes(START, END)
+    grp = groups[0]
+    for obj in grp["objects_by_mode"]["SIM"].values():
+        obj.elsets = []
+    panel = build_panel(0, grp["name"], grp["sat_order"], grp["names"],
+                        grp["objects_by_mode"], ["REAL", "SIM"], grp["reference"],
+                        False, (START, END), None, first=True)
+    assert panel["modeOrder"] == ["REAL"]
+    assert "SIM" not in panel["modeData"]
+
+
+def test_no_mode_having_an_anchor_is_an_error():
+    """State vectors alone cannot produce a waterfall: the reference orbit
+    comes from the element sets."""
+    groups = build_demo_modes(START, END)
+    grp = groups[0]
+    for by_sat in grp["objects_by_mode"].values():
+        for obj in by_sat.values():
+            obj.elsets = []
+    with pytest.raises(ComputeError, match="no usable data in any requested mode"):
+        build_panel(0, grp["name"], grp["sat_order"], grp["names"],
+                    grp["objects_by_mode"], ["REAL", "SIM"], grp["reference"],
+                    False, (START, END), None, first=True)

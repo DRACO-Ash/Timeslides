@@ -353,3 +353,24 @@ def test_space_track_is_now_a_state_vector_provider(client):
     c.probe_source(st, 59884, START, END)
     assert session.calls[0]["url"].endswith("/udl/statevector")
     assert session.calls[0]["params"]["source"] == "Space-Track"
+
+
+def test_the_client_builds_its_own_session_when_none_is_injected(tmp_path,
+                                                                 instant_bucket):
+    """The default transport path. Constructing a requests.Session opens no
+    connection, so this touches no network."""
+    from timeslides.config import Settings
+    settings = Settings(udl_base="https://udl.test/", udl_user="user",
+                        udl_pass="pass", storage_path=tmp_path)
+    client = UDLClient(settings, bucket=instant_bucket)
+    assert client.base == "https://udl.test"
+    assert client.s.auth == ("user", "pass")
+    assert client.s.headers["Accept"] == "application/json"
+
+
+def test_the_client_uses_a_rate_limiter_of_its_own_when_none_is_injected(tmp_path):
+    from timeslides.config import Settings
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path,
+                        udl_rate_per_min=42)
+    client = UDLClient(settings, session=object())
+    assert client.bucket.rate == pytest.approx(42 / 60)

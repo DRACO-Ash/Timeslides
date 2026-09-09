@@ -26,3 +26,6 @@
 httpx==0.28.1         # transport for the FastAPI TestClient
 pytest==9.1.1
 pytest-cov==7.1.0     # emits the coverage.xml the SonarQube gate reads
+quickjs==1.19.4       # runs the shipped JavaScript in process, see
+                      # tests/test_assets_js.py. A cp312 manylinux wheel is
+                      # published, so the slim runner needs no compiler.

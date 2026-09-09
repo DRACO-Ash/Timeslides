@@ -44,7 +44,7 @@ function show(target, message, isError) {
 async function api(path, options) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
-    ...(options || {})
+    ...options
   });
   let body = null;
   try { body = await res.json(); } catch (_) { /* empty or non-JSON */ }
