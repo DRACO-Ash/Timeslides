@@ -397,11 +397,28 @@ def test_the_marker_shapes_actually_render(page, live_server):
     _assert_clean(page)
 
 
+def test_the_probe_marks_its_region_busy_while_it_runs(page, live_server):
+    """The region has to say when it is mid-update, both for assistive
+    technology and so nothing reads a stale answer as a fresh one."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    region = page.locator("#probemsg")
+    assert region.get_attribute("aria-busy") == "false"
+    assert region.get_attribute("role") == "status"
+    page.click("#probebtn")
+    page.wait_for_selector('#probemsg[aria-busy="false"]')
+    assert "provider" in region.inner_text().lower() or "Demo" in region.inner_text()
+    _assert_clean(page)
+
+
 def test_the_availability_check_annotates_each_provider(page, live_server):
     page.goto(live_server, wait_until="load")
     page.wait_for_selector("#groups .grp")
     page.click("#probebtn")
-    page.wait_for_selector("#probemsg .note")
+    # Waiting on ".note" alone matched the spinner, which is also a .note, so
+    # the assertions ran before the answer arrived. aria-busy is the settle
+    # condition.
+    page.wait_for_selector('#probemsg[aria-busy="false"]')
     # Demo mode answers for every provider.
     assert page.locator("[data-source].confirmed").count() == 5
     assert page.locator("[data-source].gone").count() == 0
@@ -415,7 +432,7 @@ def test_the_availability_check_does_not_toggle_the_providers_off(page, live_ser
     page.wait_for_selector("#groups .grp")
     before = page.locator("[data-source].active").count()
     page.click("#probebtn")
-    page.wait_for_selector("#probemsg .note")
+    page.wait_for_selector('#probemsg[aria-busy="false"]')
     assert page.locator("[data-source].active").count() == before == 5
     _assert_clean(page)
 

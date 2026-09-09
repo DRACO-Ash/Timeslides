@@ -91,3 +91,47 @@ def test_load_settings_does_not_mutate_the_process_environment():
     before = dict(os.environ)
     load_settings({"TIMESLIDES_DEMO": "1", "PORT": "9999"})
     assert dict(os.environ) == before
+
+
+# --------------------------------------------------------------------------- #
+#  Packaging: what the upload artefact must carry for the gate to pass
+# --------------------------------------------------------------------------- #
+def test_the_coverage_configuration_is_not_excluded_from_the_artefact():
+    """The gate reads the coverage report, not the suite.
+
+    A broad `*.ini` rule in .gitignore once swallowed pytest.ini, so the
+    uploaded artefact carried no coverage configuration, the platform's pytest
+    run emitted no coverage.xml, and a 99 per cent covered codebase scored zero
+    at the SonarQube gate. Found only by unzipping the artefact and running the
+    tests inside it, which is why the pipeline simulation exists.
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    ini = root / "pytest.ini"
+    assert ini.exists(), "pytest.ini is missing"
+    text = ini.read_text(encoding="utf-8")
+    assert "--cov=timeslides" in text
+    assert "--cov-report=xml" in text, "the gate needs coverage.xml"
+    assert "browser" in text, "the browser marker must be registered"
+
+    ignored = subprocess.run(["git", "check-ignore", "pytest.ini"],
+                             cwd=root, capture_output=True, text=True)
+    assert ignored.returncode != 0, "pytest.ini is git-ignored and will not ship"
+
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "pytest.ini"],
+                             cwd=root, capture_output=True, text=True)
+    assert tracked.returncode == 0, "pytest.ini is not tracked and will not ship"
+
+
+def test_credential_files_are_still_ignored():
+    """Narrowing the ignore rule must not have opened the original hole."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for name in ("credentials.ini", "secrets.ini", "udl-credentials.ini"):
+        done = subprocess.run(["git", "check-ignore", name],
+                              cwd=root, capture_output=True, text=True)
+        assert done.returncode == 0, f"{name} is not ignored"

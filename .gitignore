@@ -1,7 +1,15 @@
 # Credentials never live in the repo. UDL_USER and UDL_PASS are environment
 # variables supplied by the App Store app configuration.
+#
+# Targeted rather than a blanket *.ini. The blanket rule silently swallowed
+# pytest.ini, so the upload artefact carried no coverage configuration, the
+# platform's pytest run emitted no coverage.xml, and the SonarQube gate reads
+# the artefact rather than the suite: a 99 per cent covered codebase would have
+# scored zero. Keep this list specific.
 credentials.ini
-*.ini
+secrets.ini
+*credentials*.ini
+!pytest.ini
 
 # Local reference material, not part of the upload artefact
 reference/

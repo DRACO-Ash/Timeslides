@@ -221,8 +221,15 @@ async function archiveGroup(id) {
  * answered, rather than leaving it to be discovered by absence. */
 async function probeSources() {
   const btn = el("probebtn");
+  const msg = el("probemsg");
   btn.disabled = true;
-  el("probemsg").innerHTML = '<div class="note"><span class="spin"></span>asking the UDL</div>';
+  /* aria-busy marks the region as updating. It is the correct signal for a
+   * live region mid-update, and it also gives anything watching the page a
+   * real settle condition: the spinner and the result both render as .note,
+   * so without it there is nothing in the DOM that distinguishes "asking" from
+   * "answered". */
+  msg.setAttribute("aria-busy", "true");
+  msg.innerHTML = '<div class="note"><span class="spin"></span>asking the UDL</div>';
   try {
     const body = await api("/api/sources/probe?days=7");
     const gone = [];
@@ -252,6 +259,7 @@ async function probeSources() {
     show("probemsg", err.message, true);
   } finally {
     btn.disabled = false;
+    msg.setAttribute("aria-busy", "false");
   }
 }
 

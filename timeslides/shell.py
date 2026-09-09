@@ -110,7 +110,8 @@ def _configure_panel() -> str:
               <button class="btn sm ghost" id="probebtn">check availability</button>
             </label>
             <div class="srcseg">{_source_chips()}</div>
-            <div id="probemsg"></div>
+            <div id="probemsg" role="status" aria-live="polite"
+                 aria-busy="false"></div>
           </div>
           <div class="ctrl">
             <label>Sign</label>
