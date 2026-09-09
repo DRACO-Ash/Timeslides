@@ -158,3 +158,63 @@ def test_credential_files_are_still_ignored():
         done = subprocess.run(["git", "check-ignore", name],
                               cwd=_root(), capture_output=True, text=True)
         assert done.returncode == 0, f"{name} is not ignored"
+
+
+def test_the_platform_install_file_declares_the_test_runner():
+    """The platform's test stage runs exactly two commands:
+
+        pip install -r requirements.txt
+        pytest --cov --cov-report=xml:coverage.xml
+
+    It never reads requirements-dev.txt. Keeping pytest out of
+    requirements.txt gave "pytest: command not found" and exit 127, and no
+    amount of local green could have shown it, because locally the tooling was
+    already installed. So the file the platform installs has to declare the
+    runner the platform invokes.
+    """
+    text = (_root() / "requirements.txt").read_text(encoding="utf-8")
+    assert "pytest==" in text, "requirements.txt must pin pytest"
+    assert "pytest-cov==" in text, "requirements.txt must pin pytest-cov"
+    assert "httpx==" in text, "the FastAPI TestClient needs httpx"
+    assert "-r requirements-runtime.txt" in text, "runtime deps must be included"
+
+
+def test_the_runtime_install_file_carries_no_test_tooling():
+    """The image installs requirements-runtime.txt, and the container scan
+    judges what is in the image. Test tooling in there is surface for code that
+    never runs in production."""
+    text = (_root() / "requirements-runtime.txt").read_text(encoding="utf-8")
+    for tool in ("pytest", "httpx", "playwright", "coverage"):
+        assert tool not in text.lower(), f"{tool} does not belong in the image"
+    for runtime in ("astropy", "fastapi", "numpy", "plotly", "sgp4", "uvicorn"):
+        assert runtime in text, f"{runtime} is missing from the runtime set"
+
+
+def test_the_dockerfile_installs_the_runtime_set_not_the_platform_set():
+    text = (_root() / "Dockerfile").read_text(encoding="utf-8")
+    assert "requirements-runtime.txt" in text
+    assert "pip install --no-cache-dir -r requirements.txt" not in text
+
+
+def test_the_coverage_source_is_pinned_for_the_platforms_bare_cov():
+    """`pytest --cov` with no value takes its source from configuration. Without
+    this the platform's invocation measures whatever was imported and dilutes
+    the figure the gate reads with test files and site-packages."""
+    text = (_root() / ".coveragerc").read_text(encoding="utf-8")
+    assert "source = timeslides" in text
+
+
+def test_the_dockerfile_does_not_set_the_port():
+    """The platform sets containerPort 8080 and probes it; the app reads PORT
+    with 8080 as its default. Setting it in the image is how you end up serving
+    on a port nothing probes."""
+    # Comment lines are stripped first: the Dockerfile documents the absence
+    # of ENV PORT in a comment, and matching that comment is not the same as
+    # matching a directive.
+    lines = [ln for ln in (_root() / "Dockerfile").read_text(encoding="utf-8").splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    directives = "\n".join(lines)
+    assert "ENV PORT=" not in directives
+    assert "PORT" not in directives.replace("--port", ""), \
+        "PORT must be read with a default, never set in the image"
+    assert "USER 1000:1000" in directives

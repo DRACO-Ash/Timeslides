@@ -1,14 +1,28 @@
 # Presence of this file is what makes the App Store pick the python build
 # template, so it stays at the repository root.
 #
+# It carries the test tooling as well as the runtime dependencies, and that is
+# deliberate. The platform's generated test stage runs exactly two commands:
+#
+#     pip install -r requirements.txt
+#     pytest --cov --cov-report=xml:coverage.xml
+#
+# It never reads requirements-dev.txt. Keeping pytest out of this file gave
+# "pytest: command not found" and exit 127 at the test stage, so the tooling
+# the platform invokes has to be declared where the platform looks.
+#
+# The container image does NOT install this file. The Dockerfile installs
+# requirements-runtime.txt so the runtime carries no test tooling, which keeps
+# the image small and keeps the container scan's surface to what actually runs.
+#
 # Pinned exactly: the container-scan stage judges resolved dependency contents,
 # so a floating range means a build that passed yesterday can fail today for
 # reasons nobody changed.
-astropy==8.0.1        # GCRS to TEME conversion; UDL state vectors are J2000
-fastapi==0.141.1
-numpy==2.4.6
-plotly==7.0.0         # inlined into the report, never fetched from a CDN
-pydantic==2.13.5      # boundary validation on every request body
-requests==2.34.2
-sgp4==2.27
-uvicorn==0.52.4
+
+# --- runtime ---------------------------------------------------------------
+-r requirements-runtime.txt
+
+# --- test tooling the platform's test stage needs ---------------------------
+httpx==0.28.1         # transport for the FastAPI TestClient
+pytest==9.1.1
+pytest-cov==7.1.0     # emits the coverage.xml the SonarQube gate reads

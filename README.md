@@ -100,3 +100,9 @@ tests/                     320 tests, including 13 browser tests
 .venv/bin/python -m pytest                        # everything, with coverage
 .venv/bin/python -m pytest -m browser             # just the browser suite
 ```
+
+Three requirements files, because the platform reads only one of them:
+`requirements.txt` is what the App Store's test stage installs, so it carries
+the test runner as well as the runtime; `requirements-runtime.txt` is what the
+container image installs, runtime only; `requirements-dev.txt` adds Playwright
+for the browser suite, which needs a browser and so stays local. See AUDIT.md.

@@ -1,5 +1,9 @@
+# Local development: everything the platform installs, plus the browser suite.
+#
+# Playwright is deliberately NOT in requirements.txt. The platform's runner is
+# a slim Python image with no browser, so installing it there buys nothing and
+# the browser module skips itself either way. The browser suite is run locally
+# before an upload, and AUDIT.md records that a skipped browser suite is not a
+# passed one.
 -r requirements.txt
-httpx==0.28.1         # FastAPI TestClient transport
-playwright==1.62.0    # the browser smoke test
-pytest==9.1.1
-pytest-cov==7.1.0
+playwright==1.62.0

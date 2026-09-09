@@ -1,0 +1,20 @@
+# The platform's test stage invokes:
+#
+#     pytest --cov --cov-report=xml:coverage.xml
+#
+# A bare --cov means "take the source from configuration", so the measured set
+# has to be declared here. Without it the platform's invocation measures
+# whatever happens to be imported, which dilutes the figure the SonarQube gate
+# reads with test files and site-packages.
+[run]
+source = timeslides
+branch = False
+omit =
+    # Runs in a browser, not under the Python runner, so it reads as 0 per cent
+    # here. Covered in substance by the Playwright suite and still analysed by
+    # SonarQube. The same exclusion and the same reason are in
+    # sonar-project.properties.
+    timeslides/report/assets/*
+
+[report]
+show_missing = True

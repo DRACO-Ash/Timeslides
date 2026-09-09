@@ -79,6 +79,14 @@ access and confirm the prep stage's setuid assertion passes, the final image
 reports `USER 1000:1000`, and `docker history` shows a single layer above
 scratch.
 
+The base image is `registry.bluestaq.com/container/library/python:3.12-slim`,
+the internal mirror at the tag the platform's own runners pull. A `docker.io`
+reference will not resolve on builders in this environment. Note also that with
+`requirements.txt` present the App Store auto-detects the python template and
+may build the image from that template rather than from this Dockerfile, in
+which case this file is the record of what the image must satisfy rather than
+the thing that produces it.
+
 ## Container image policy
 
 The image is flattened. A `chmod -s` in a later layer does not remove a bit an
@@ -109,17 +117,57 @@ under the test runner and is verified out of process instead, and
 coverage reporter cannot see it and is covered in substance by the Playwright
 suite. Neither is excluded from analysis.
 
+## Dependency files, and why there are three
+
+The platform's generated test stage runs exactly two commands and reads exactly
+one requirements file:
+
+```
+pip install -r requirements.txt
+pytest --cov --cov-report=xml:coverage.xml
+```
+
+That drives the split.
+
+| File | Installed by | Contents |
+|---|---|---|
+| `requirements.txt` | the platform's test stage | runtime, plus pytest, pytest-cov and httpx |
+| `requirements-runtime.txt` | the container image | runtime only, eight packages |
+| `requirements-dev.txt` | a developer, locally | the platform set plus Playwright |
+
+The test tooling has to be in `requirements.txt` because that is the only file
+the platform installs; leaving it in `requirements-dev.txt` gave
+`pytest: command not found` and exit 127 at the test stage. It must not be in
+the image, because the container scan judges what the image contains, so the
+Dockerfile installs `requirements-runtime.txt` instead. Playwright stays local:
+the runner is a slim Python image with no browser, so installing it there buys
+nothing and the browser module skips itself either way.
+
+`.coveragerc` pins `source = timeslides`, because the platform passes a bare
+`--cov` and that means "take the source from configuration". Without it the
+figure the gate reads is diluted by test files and site-packages.
+
+Five tests guard all of this: that `requirements.txt` declares the runner, that
+`requirements-runtime.txt` carries no test tooling, that the Dockerfile
+installs the runtime set, that the coverage source is pinned, and that the
+Dockerfile never sets `PORT`.
+
 ## Verification loop
 
 Run before every upload. A green repository loop is not a green upload, so the
-last step reproduces what the platform actually installs.
+last two steps reproduce what the platform actually does.
 
 ```bash
+# Everything, including the browser suite
 python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest                    # 320 tests, coverage.xml
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
-  .venv/bin/python -m pytest -m browser       # the 13 browser tests
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python -m pytest
 TIMESLIDES_DEMO=1 .venv/bin/python -m timeslides --out /tmp/check.html
+
+# The platform's test stage, verbatim, in a clean directory with only
+# requirements.txt installed. This is the step that catches what local green
+# cannot: tooling that is present on your machine and absent on the runner.
+pip install -r requirements.txt
+pytest --cov --cov-report=xml:coverage.xml
 ```
 
 **A skipped browser suite is not a passed one.** The Playwright fixture skips

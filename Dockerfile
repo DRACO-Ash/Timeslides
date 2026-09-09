@@ -1,3 +1,15 @@
+# Base image: the internal mirror, at the tag the platform's own runners use
+# (the job log shows repository-runner pulling
+# registry.bluestaq.com/container/library/python:3.12-slim). Builders in this
+# environment mirror rather than reach Docker Hub, so a docker.io reference
+# fails to resolve. INFERENCE about the builders' egress, but well founded: the
+# mirror exists and the runner pulls from it.
+#
+# Note also that with requirements.txt present the App Store auto-detects the
+# python template and may build the image from that template rather than from
+# this file. This Dockerfile is the fallback and the record of what the image
+# must satisfy either way.
+#
 # Two rules from the App Store container image policy shape this file.
 #
 # 1. Non-root, specified numerically. USER 1000:1000, not a name, because the
@@ -18,25 +30,30 @@
 # --------------------------------------------------------------------------- #
 #  Stage 1: wheels
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS build
+FROM registry.bluestaq.com/container/library/python:3.12-slim AS build
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /w
-COPY requirements.txt .
+# requirements-runtime.txt, not requirements.txt. The latter also carries the
+# test tooling, because the platform's generated test stage installs only
+# requirements.txt and runs pytest from it. None of that belongs in the image:
+# it would enlarge the layer and widen what the container scan judges for code
+# that never runs in production.
+COPY requirements-runtime.txt .
 # Built into a virtualenv so the runtime rootfs carries the interpreter and the
 # dependencies and nothing else: no pip, no setuptools, no build toolchain.
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip==25.2 \
- && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+ && /opt/venv/bin/pip install --no-cache-dir -r requirements-runtime.txt \
  && /opt/venv/bin/pip uninstall -y pip setuptools wheel || true
 
 # --------------------------------------------------------------------------- #
 #  Stage 2: the rootfs, cleaned
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS prep
+FROM registry.bluestaq.com/container/library/python:3.12-slim AS prep
 
 COPY --from=build /opt/venv /opt/venv
 WORKDIR /app
