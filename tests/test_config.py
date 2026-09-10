@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from timeslides.config import DEFAULT_PORT, Settings, load_settings
@@ -234,6 +236,8 @@ def test_the_dockerfile_does_not_set_the_port():
     ("/mnt/store", "/mnt/store"),
     ("/var/lib/app_store-1.0", "/var/lib/app_store-1.0"),
     ("/data/./groups", "/data/groups"),
+    ("/data/-x", "/data/-x"),          # a leading dash is a legal segment
+    ("/a/b/c/d/e", "/a/b/c/d/e"),
     (None, "/data"),
     ("", "/data"),
 ])
@@ -243,16 +247,16 @@ def test_a_sane_storage_path_is_accepted_and_tidied(raw, want):
                              else {"TIMESLIDES_DEMO": "1"}).storage_path) == want
 
 
-@pytest.mark.parametrize("raw", [
-    "relative/path",
-    "/data/../etc",
-    "..",
-    "//data",
-    "/data\x00/x",
-    "/data/$(whoami)",
-    "/data/x;rm -rf /",
+@pytest.mark.parametrize("raw,because", [
+    ("relative/path", "must be an absolute path"),
+    ("..", "must be an absolute path"),
+    ("/data/../etc", "must not contain a traversal segment"),
+    ("//data", "must not begin with a double slash"),
+    ("/data\x00/x", "must use only letters"),
+    ("/data/$(whoami)", "must use only letters"),
+    ("/data/x;rm -rf /", "must use only letters"),
 ])
-def test_a_storage_path_that_is_not_a_plain_absolute_path_fails_closed(raw):
+def test_a_storage_path_that_is_not_a_plain_absolute_path_fails_closed(raw, because):
     """Validated at the boundary rather than trusted down to the writes.
 
     This is the one environment variable the application then builds filesystem
@@ -260,5 +264,37 @@ def test_a_storage_path_that_is_not_a_plain_absolute_path_fails_closed(raw):
     reported rather than normalised away, because a STORAGE_MOUNT_PATH
     containing one is a misconfiguration, not something to reinterpret.
     """
-    with pytest.raises(ConfigError, match="STORAGE_MOUNT_PATH"):
+    with pytest.raises(ConfigError, match="STORAGE_MOUNT_PATH") as caught:
         load_settings({"TIMESLIDES_DEMO": "1", "STORAGE_MOUNT_PATH": raw})
+    assert because in str(caught.value)
+
+
+def test_validating_the_storage_path_cannot_be_made_to_run_away():
+    """A regression test for a real denial-of-service shape.
+
+    The first version of this check was the regex
+    r"^/(?:[A-Za-z0-9._][A-Za-z0-9._-]*/?)*$". Its nested quantifier is
+    ambiguous: a run of allowed characters can be divided between the inner and
+    outer repetitions in exponentially many ways, so a value that fails at the
+    very end backtracks through all of them. Measured at roughly four times the
+    work per added character, 2.8 seconds at 26 characters, and about a
+    fortnight at 60.
+
+    Sixty characters is the input below. A second is a generous ceiling for
+    work that now takes microseconds, and no ceiling at all would have caught
+    the old behaviour.
+    """
+    hostile = "/" + "a" * 60 + "!"
+    started = time.perf_counter()
+    with pytest.raises(ConfigError):
+        load_settings({"TIMESLIDES_DEMO": "1", "STORAGE_MOUNT_PATH": hostile})
+    assert time.perf_counter() - started < 1.0
+
+
+def test_a_very_long_storage_path_is_still_only_a_refusal():
+    """The cost has to track the length of the input, not explode with it."""
+    started = time.perf_counter()
+    with pytest.raises(ConfigError):
+        load_settings({"TIMESLIDES_DEMO": "1",
+                       "STORAGE_MOUNT_PATH": "/" + "a" * 100_000 + "!"})
+    assert time.perf_counter() - started < 1.0

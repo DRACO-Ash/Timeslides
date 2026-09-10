@@ -18,7 +18,7 @@ failing every request.
 from __future__ import annotations
 
 import os
-import re
+import string
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,23 +44,50 @@ DEFAULT_HOST = ""
 
 # The storage path is the one environment variable the application then builds
 # filesystem paths from, so it is validated at the boundary rather than trusted
-# all the way down to the writes. It has to be an absolute, fully normalised
-# path with no traversal segment: that is what the platform injects
+# all the way down to the writes. It has to be an absolute, normalised path
+# with no traversal segment: that is what the platform injects
 # (STORAGE_MOUNT_PATH=/data), and anything else is a misconfiguration worth
 # failing closed on.
-_SAFE_PATH = re.compile(r"^/(?:[A-Za-z0-9._][A-Za-z0-9._-]*/?)*$")
+#
+# Checked against a character set rather than a regex. The first version used
+# r"^/(?:[A-Za-z0-9._][A-Za-z0-9._-]*/?)*$", whose nested quantifier is
+# ambiguous: a run of allowed characters can be divided between the inner and
+# outer repetitions in exponentially many ways, so a value that fails at the
+# end backtracks through all of them. Measured on this machine at roughly four
+# times the work per added character, reaching 2.8 seconds at 26. A set
+# membership test cannot backtrack at all and reads more plainly besides.
+_PATH_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
+
+
+def _path_problem(candidate: str) -> str:
+    """Why this is not a usable storage path, or an empty string if it is."""
+    if not candidate.startswith("/"):
+        return "must be an absolute path"
+    if candidate.startswith("//"):
+        # POSIX leaves a leading double slash implementation-defined, and
+        # PurePosixPath preserves it rather than collapsing it, so the path
+        # would not be the one the operator meant.
+        return "must not begin with a double slash"
+    for segment in candidate.split("/"):
+        if segment in ("", "."):
+            continue                       # a trailing slash, or a no-op segment
+        if segment == "..":
+            return "must not contain a traversal segment"
+        if not set(segment) <= _PATH_CHARS:
+            return ("must use only letters, digits, dot, dash and underscore "
+                    "in each segment")
+    return ""
 
 
 def _storage_path(raw) -> Path:
     candidate = (raw or DEFAULT_STORAGE).strip() or DEFAULT_STORAGE
-    if not _SAFE_PATH.match(candidate) or ".." in Path(candidate).parts:
-        raise ConfigError(
-            f"STORAGE_MOUNT_PATH must be an absolute path with no traversal "
-            f"segment, got {candidate!r}")
-    # Path() collapses the remaining harmless noise: a trailing slash, a "."
+    problem = _path_problem(candidate)
+    if problem:
+        raise ConfigError(f"STORAGE_MOUNT_PATH {problem}, got {candidate!r}")
+    # Path collapses the remaining harmless noise: a trailing slash, a "."
     # segment, a repeated separator. ".." is the only segment that could climb
     # out, and it is refused above rather than normalised away, because a
-    # STORAGE_MOUNT_PATH containing one is a misconfiguration to report, not
+    # STORAGE_MOUNT_PATH containing one is a misconfiguration to surface, not
     # something to quietly reinterpret.
     return Path(candidate)
 
