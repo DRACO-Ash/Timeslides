@@ -432,7 +432,7 @@ def test_recreate_does_not_remove_the_target_until_a_write_has_succeeded(
     Asserted directly against the strategy, because through the ladder the
     earlier rungs mask it: this is the guarantee the rung itself has to make.
     """
-    from timeslides.groups import _write_recreate
+    from timeslides.storage import _write_recreate
 
     target = tmp_path / "groups.json"
     target.write_text('{"rev": 1, "groups": []}', encoding="utf-8")
@@ -445,7 +445,7 @@ def test_recreate_does_not_remove_the_target_until_a_write_has_succeeded(
 
 
 def test_recreate_leaves_nothing_beside_the_target(tmp_path):
-    from timeslides.groups import _write_recreate
+    from timeslides.storage import _write_recreate
 
     target = tmp_path / "groups.json"
     _write_recreate(target, '{"rev": 1, "groups": []}')
@@ -481,19 +481,21 @@ def test_a_real_fsync_error_is_not_swallowed(tmp_path, monkeypatch):
 
 
 def test_a_parent_that_cannot_be_created_is_reported(tmp_path, monkeypatch):
-    """No directory, and mkdir refused: there is nowhere to write."""
+    """No directory, and nothing can be written into it either."""
     store = GroupStore(tmp_path / "nested" / "groups.json")
     monkeypatch.setattr(pathlib.Path, "mkdir", _refusing(errno.EROFS))
+    monkeypatch.setattr(builtins, "open", _refusing(errno.EROFS))
     ok, detail = store.writable()
     assert ok is False
     assert "EROFS" in detail
 
 
-def test_a_refused_mkdir_is_ignored_when_the_parent_is_already_there(tmp_path,
-                                                                    monkeypatch):
-    """On an object-store mount there are no real directories, and mkdir can
-    fail even for a path that exists. What matters is that the parent is there,
-    not that mkdir was allowed to run."""
+def test_a_refused_mkdir_does_not_by_itself_fail_a_write(tmp_path, monkeypatch):
+    """On an object-store mount there are no real directories: the separator
+    only looks like one. mkdir can fail with ENOSYS on a path that is
+    perfectly writable, and mountpoint-for-s3 refuses mkdir while accepting a
+    write to a key beneath it. Raising on mkdir would turn a working volume
+    into an unusable one, so the write is the arbiter."""
     store = GroupStore(tmp_path / "groups.json")
     calls = []
 
@@ -501,11 +503,16 @@ def test_a_refused_mkdir_is_ignored_when_the_parent_is_already_there(tmp_path,
         calls.append(self)
         raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
 
+    # is_dir false everywhere forces the mkdir attempt even though tmp_path
+    # exists, which is exactly the object-store shape.
     monkeypatch.setattr(pathlib.Path, "is_dir", lambda self: False)
     monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
-    ok, _detail = store.writable()
+    ok, detail = store.writable()
     assert calls, "mkdir should have been attempted"
-    assert ok is False, "with is_dir false throughout, there is nowhere to write"
+    assert ok is True, detail
+    made = store.create(_group())
+    assert [g["id"] for g in store.active()] == [made["id"]]
+    assert store.persistent
 
 
 def test_a_corrupt_document_does_not_stop_the_fallback(tmp_path):

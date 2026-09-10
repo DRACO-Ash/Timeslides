@@ -298,3 +298,20 @@ def test_a_very_long_storage_path_is_still_only_a_refusal():
         load_settings({"TIMESLIDES_DEMO": "1",
                        "STORAGE_MOUNT_PATH": "/" + "a" * 100_000 + "!"})
     assert time.perf_counter() - started < 1.0
+
+
+def test_a_storage_path_given_as_a_string_is_usable():
+    """A dataclass annotation is not a conversion.
+
+    Settings is annotated ``storage_path: Path`` and load_settings always
+    passed one, so this was never exercised: constructing Settings directly
+    with a string produced a working object that raised TypeError on first
+    use, at ``storage_path / "groups.json"``. Found by the end-to-end suite,
+    which passes the path through a subprocess argument.
+    """
+    from pathlib import Path
+
+    settings = Settings(storage_path="/mnt/example")
+    assert isinstance(settings.storage_path, Path)
+    assert settings.groups_file == Path("/mnt/example/groups.json")
+    assert settings.runs_path == Path("/mnt/example/runs")

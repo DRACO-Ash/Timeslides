@@ -41,6 +41,7 @@ import numpy as np
 from ..errors import ComputeError
 from ..models import ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL
 from ..physics import compute_series, propagate, reference_satrec
+from ..storage import VolumeWriter
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -480,7 +481,11 @@ def render_report(panels, classification: str, generated: dt.datetime | None = N
 
 
 def write_report(html: str, out_path) -> Path:
+    """Write a report to a path, for the command-line entry point.
+
+    Through the shared writer like every other write in the application, so a
+    local run on an unusual filesystem behaves the same way the service does.
+    """
     path = Path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    VolumeWriter().write(path, html)
     return path

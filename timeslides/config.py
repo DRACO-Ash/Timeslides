@@ -135,6 +135,19 @@ class Settings:
     max_results: int = 5000
     log_level: str = "INFO"
 
+    def __post_init__(self):
+        """Coerce storage_path to a Path.
+
+        The field is annotated Path and load_settings always passes one, but a
+        dataclass annotation is not a conversion: anybody constructing Settings
+        directly with a string got a working object that raised TypeError on
+        first use, at ``storage_path / "groups.json"``. Found by the end-to-end
+        suite, which passes the path through a subprocess argument and so had
+        it as a string.
+        """
+        if not isinstance(self.storage_path, Path):
+            object.__setattr__(self, "storage_path", Path(self.storage_path))
+
     @property
     def runs_path(self) -> Path:
         return self.storage_path / "runs"

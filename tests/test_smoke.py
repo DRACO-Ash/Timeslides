@@ -90,6 +90,21 @@ def live_server(tmp_path_factory):
     thread.join(timeout=10)
 
 
+@pytest.fixture
+def fresh_server(tmp_path_factory):
+    """A server of its own, for tests that remove things.
+
+    live_server is module-scoped and shared, so a test that archives every
+    group leaves the ones after it with nothing to click. Destructive tests get
+    their own.
+    """
+    storage = tmp_path_factory.mktemp("fresh")
+    settings = Settings(storage_path=storage, demo=True, classification="OFFICIAL")
+    base, stop = _serve(create_app(settings=settings))
+    yield base
+    stop()
+
+
 @pytest.fixture(scope="module")
 def browser():
     """A missing browser skips, and says so loudly.
@@ -400,29 +415,34 @@ def test_a_hostile_group_name_does_not_execute(page, live_server):
 #  The storage warning, and the layout it must not break
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def unwritable_server(tmp_path_factory):
-    """The app as it behaves with no volume mounted at its storage path."""
+def unwritable_server(tmp_path_factory, monkeypatch):
+    """No usable volume at all: every write through the shared writer fails.
+
+    An earlier version of this fixture only overrode the store's writability
+    probe, which meant the render still wrote to a perfectly good temp
+    directory. So it proved the group store degraded and said nothing at all
+    about the renderer, which was the half that stayed broken. Refusing at the
+    writer covers every write the application makes.
+    """
     import errno
     import os as _os
 
     from timeslides.api import create_app
     from timeslides.config import Settings
-    from timeslides.groups import GroupStore, write_failure_advice
+    from timeslides.groups import GroupStore
+    from timeslides.storage import VolumeWriter, write_failure_advice
 
     reason = write_failure_advice(OSError(errno.EROFS, _os.strerror(errno.EROFS)))
 
-    class ReadOnlyStore(GroupStore):
-        """Only the volume is broken. Seeding and saving are left alone so the
-        test exercises the app's own fallback rather than a stubbed refusal."""
+    def refuse(_self, _target, _payload):
+        raise OSError(errno.EROFS, _os.strerror(errno.EROFS))
 
-        def writable(self):
-            return False, reason
-
+    monkeypatch.setattr(VolumeWriter, "write", refuse)
     storage = tmp_path_factory.mktemp("readonly")
     settings = Settings(storage_path=storage, demo=True, classification="OFFICIAL")
     base, stop = _serve(create_app(settings=settings,
-                                   store=ReadOnlyStore(settings.groups_file)))
-    yield base
+                                   store=GroupStore(settings.groups_file)))
+    yield base, storage, reason
     stop()
 
 
@@ -432,9 +452,10 @@ def s3_server(tmp_path_factory, monkeypatch):
 
     The File Storage add-on is S3-backed and mounted at /data. Such mounts
     implement neither fsync nor rename, and assuming POSIX there made every
-    save fail with ENOSYS (errno 38), Function not implemented. The patch is
-    applied to the store's own module so it cannot disturb pytest's or
-    coverage's file writing.
+    save and then every render fail with ENOSYS (errno 38), Function not
+    implemented. The patch is applied to timeslides.storage, the only place the
+    application writes a file, so it covers every write the app makes without
+    disturbing pytest's or coverage's own.
     """
     import errno
     import os as _os
@@ -453,7 +474,7 @@ def s3_server(tmp_path_factory, monkeypatch):
         def fsync(self, *_a, **_k):
             raise OSError(errno.ENOSYS, _os.strerror(errno.ENOSYS))
 
-    monkeypatch.setattr("timeslides.groups.os", NoPosixOS())
+    monkeypatch.setattr("timeslides.storage.os", NoPosixOS())
     storage = tmp_path_factory.mktemp("s3mount")
     settings = Settings(storage_path=storage, demo=True, classification="OFFICIAL")
     base, stop = _serve(create_app(settings=settings,
@@ -526,7 +547,8 @@ def test_an_unwritable_volume_warns_without_breaking_the_page(page, unwritable_s
     groups and render controls all gone. This asserts the geometry, not just
     the presence of the text, because the class list was correct either way.
     """
-    page.goto(unwritable_server, wait_until="load")
+    base, _storage, _reason = unwritable_server
+    page.goto(base, wait_until="load")
     warning = page.locator(".storagewarn")
     warning.wait_for()
     assert "kept in memory, not saved" in warning.inner_text()
@@ -555,7 +577,8 @@ def test_the_core_flow_works_with_no_volume(page, unwritable_server):
     an unwritable path, which left the deployed app unusable rather than
     merely unable to remember anything.
     """
-    page.goto(unwritable_server, wait_until="load")
+    base, storage, _reason = unwritable_server
+    page.goto(base, wait_until="load")
     page.wait_for_selector("#groups .grp")
     seeded = page.locator("#groups .grp").count()
     assert seeded == 3, f"the starter groups should still appear, got {seeded}"
@@ -586,17 +609,19 @@ def test_the_core_flow_works_with_no_volume(page, unwritable_server):
     # The group is counted into the next render.
     assert "4" in page.locator("#groupcount").inner_text()
 
-    # And the tool runs. This fixture is in demo mode, which draws fixed
-    # sample panels rather than the requested groups, so the group-to-panel
-    # wiring on the fallback store is asserted against a recording renderer in
+    # And the tool runs, with the report held in memory because the volume
+    # refused it. This fixture is in demo mode, which draws fixed sample
+    # panels rather than the requested groups, so the group-to-panel wiring on
+    # the fallback store is asserted against a recording renderer in
     # test_api.py instead. What matters here is that the button works and a
-    # report comes back with no volume attached.
+    # report comes back with no volume at all.
     page.click("#runbtn")
     page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
     frame = page.frame_locator("#repframe")
     frame.locator(".classif").wait_for(timeout=60_000)
     frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
     assert frame.locator(".tabs .tab").count() >= 1
+    assert not any(storage.rglob("*.html")), "nothing should have reached the volume"
     _assert_clean(page)
 
 
@@ -713,4 +738,226 @@ def test_deselecting_a_provider_keeps_it_out_of_the_report(page, live_server):
     assert "LeoLabs" in legend
     # The element-set series is always there: it anchors the reference orbit.
     assert "Element sets" in legend
+    _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  The controls that had no browser coverage at all
+#
+#  Each of these is a button somebody will press. Every one of them was
+#  reachable and untested, which is how a whole write path stayed broken
+#  through three releases.
+# --------------------------------------------------------------------------- #
+def test_archiving_asks_first_and_does_nothing_if_declined(page, fresh_server):
+    """Archiving is guarded by a confirm, so a stray click cannot remove
+    somebody's group. Playwright dismisses dialogs unless told otherwise, which
+    is the decline case."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    before = page.locator("#groups .grp").count()
+    asked = []
+    page.on("dialog", lambda d: (asked.append(d.message), d.dismiss()))
+    page.locator("#groups .grp button[data-archive]").first.click()
+    page.wait_for_timeout(300)
+    assert asked, "archiving must ask before removing a group"
+    assert "Archive" in asked[0]
+    assert page.locator("#groups .grp").count() == before
+    _assert_clean(page)
+
+
+def test_a_group_can_be_archived_and_leaves_the_list(page, fresh_server):
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    before = page.locator("#groups .grp").count()
+    name = page.locator("#groups .gn").first.inner_text().strip()
+    page.on("dialog", lambda d: d.accept())
+    page.locator("#groups .grp button[data-archive]").first.click()
+    page.wait_for_function(
+        f"() => document.querySelectorAll('#groups .grp').length === {before - 1}")
+    assert name not in page.locator("#groups").inner_text()
+    assert page.locator("#groupsmsg .err").count() == 0
+    _assert_clean(page)
+
+
+def test_archiving_the_last_group_disables_rendering(page, fresh_server):
+    """Nothing to render is a disabled button, not a failed run."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.on("dialog", lambda d: d.accept())
+    while page.locator("#groups .grp").count():
+        count = page.locator("#groups .grp").count()
+        page.locator("#groups .grp button[data-archive]").first.click()
+        page.wait_for_function(
+            f"() => document.querySelectorAll('#groups .grp').length === {count - 1}")
+    assert page.locator("#runbtn").is_disabled()
+    assert "No groups yet" in page.locator("#groups").inner_text()
+    _assert_clean(page)
+
+
+def test_cancelling_an_edit_clears_the_editor(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.locator("#groups .grp button[data-edit]").first.click()
+    page.wait_for_selector("#picked .row")
+    assert page.locator("#cancelbtn").is_visible()
+    assert page.locator("#editing").inner_text().strip()
+
+    page.click("#cancelbtn")
+    assert page.locator("#picked .row").count() == 0
+    assert page.locator("#gname").input_value() == ""
+    assert not page.locator("#cancelbtn").is_visible()
+    assert page.locator("#editing").inner_text().strip() == ""
+    assert page.locator("#savebtn").is_disabled()
+    _assert_clean(page)
+
+
+def test_a_duplicate_group_name_is_refused_with_a_reason(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    existing = page.locator("#groups .gn").first.inner_text().strip()
+
+    page.fill("#q", "cosmos")
+    page.click("#searchbtn")
+    page.wait_for_selector("#hits .row")
+    for _ in range(2):
+        page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.fill("#gname", existing)
+    page.dispatch_event("#gname", "input")
+    page.click("#savebtn")
+    page.wait_for_selector("#savemsg .err")
+    assert "already exists" in page.locator("#savemsg .err").inner_text()
+    # The 400 is the point of the test, so the failed request is expected.
+    _assert_clean(page, allow_failed_requests=True)
+
+
+def test_the_save_button_stays_disabled_until_the_group_is_valid(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    assert page.locator("#savebtn").is_disabled()
+
+    page.fill("#gname", "Not Enough Objects")
+    page.dispatch_event("#gname", "input")
+    assert page.locator("#savebtn").is_disabled(), "a name alone is not a group"
+
+    page.fill("#q", "cosmos")
+    page.click("#searchbtn")
+    page.wait_for_selector("#hits .row")
+    page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.wait_for_selector("#picked .row")
+    assert page.locator("#savebtn").is_disabled(), "one object is not a group"
+
+    page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.wait_for_selector("#picked .row:nth-child(2)")
+    assert not page.locator("#savebtn").is_disabled()
+    _assert_clean(page)
+
+
+def test_a_search_that_matches_nothing_says_so(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.fill("#q", "zzzznotathing")
+    page.click("#searchbtn")
+    page.wait_for_selector("#searchmsg .note")
+    assert "Nothing in the catalogue matches" in page.locator("#searchmsg").inner_text()
+    assert page.locator("#hits .row").count() == 0
+    _assert_clean(page)
+
+
+def test_real_is_the_only_data_mode_on_by_default(page, live_server):
+    """As the command line defaulted. The others are opt-in."""
+    page.goto(live_server, wait_until="load")
+    active = page.locator("[data-mode].active")
+    assert active.count() == 1
+    assert active.inner_text().strip() == "REAL"
+
+
+@pytest.mark.parametrize("mode", ["SIM", "TEST", "EXERCISE"])
+def test_data_modes_add_to_the_selection_rather_than_replacing_it(
+        page, live_server, mode):
+    """Several modes at once is the point: the original --modes took a list,
+    and a run plots each mode it was given."""
+    page.goto(live_server, wait_until="load")
+    page.click(f'[data-mode="{mode}"]')
+    selected = page.eval_on_selector_all(
+        "[data-mode].active", "els => els.map(e => e.dataset.mode)")
+    assert sorted(selected) == sorted(["REAL", mode])
+    _assert_clean(page)
+
+
+def test_turning_every_data_mode_off_is_refused_before_a_run_is_sent(page,
+                                                                    live_server):
+    """A run with no mode would be a confusing server error, so the page says
+    so instead and sends nothing."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click('[data-mode="REAL"]')
+    assert page.locator("[data-mode].active").count() == 0
+    page.click("#runbtn")
+    page.wait_for_selector("#runmsg .err")
+    assert "at least one data mode" in page.locator("#runmsg").inner_text()
+    assert page.locator("#repframe").get_attribute("hidden") is not None
+    _assert_clean(page)
+
+
+def test_turning_every_provider_off_is_refused_before_a_run_is_sent(page,
+                                                                   live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    for i in range(page.locator("[data-source]").count()):
+        page.locator("[data-source]").nth(i).click()
+    assert page.locator("[data-source].active").count() == 0
+    page.click("#runbtn")
+    page.wait_for_selector("#runmsg .err")
+    assert "at least one provider" in page.locator("#runmsg").inner_text()
+    _assert_clean(page)
+
+
+def test_the_window_accepts_its_range_and_refuses_beyond_it(page, live_server):
+    """The input carries the bounds, and the server is the one that enforces
+    them, so both are checked."""
+    page.goto(live_server, wait_until="load")
+    days = page.locator("#days")
+    assert days.get_attribute("min") == "1"
+    assert days.get_attribute("max") == "90"
+    for value in ("1", "90", "30"):
+        days.fill(value)
+        assert days.input_value() == value
+    _assert_clean(page)
+
+
+def test_the_sign_invert_is_an_off_by_default_toggle(page, live_server):
+    """Invert is the sign of the offset, not a provider control. It sits under
+    the SIGN label and is sent with the run."""
+    page.goto(live_server, wait_until="load")
+    invert = page.locator("#invert")
+    assert "active" not in (invert.get_attribute("class") or "")
+    invert.click()
+    assert "active" in (invert.get_attribute("class") or "")
+    invert.click()
+    assert "active" not in (invert.get_attribute("class") or "")
+    _assert_clean(page)
+
+
+def test_every_provider_starts_on_and_toggles_independently(page, live_server):
+    page.goto(live_server, wait_until="load")
+    chips = page.locator("[data-source]")
+    assert chips.count() == 5
+    assert page.locator("[data-source].active").count() == 5
+    chips.first.click()
+    assert page.locator("[data-source].active").count() == 4
+    chips.first.click()
+    assert page.locator("[data-source].active").count() == 5
+    _assert_clean(page)
+
+
+def test_the_report_can_be_rendered_twice_in_a_row(page, live_server):
+    """The second render is the one that exercises eviction and the ETag path,
+    and a report served from a 304 must still display."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    for _ in range(2):
+        page.click('.tab[data-tab="cfg"]')
+        page.click("#runbtn")
+        page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+        page.frame_locator("#repframe").locator(".js-plotly-plot").first.wait_for(
+            timeout=60_000)
     _assert_clean(page)

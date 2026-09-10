@@ -25,12 +25,21 @@ import threading
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .audit import event, safe
 from .errors import NotFoundError, TimeslidesError
+from .storage import VolumeWriter, write_failure_advice
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
 MAX_REMEMBERED = 50
+
+# How many rendered reports to hold in memory when the volume cannot be
+# written. A report is several megabytes, so this is deliberately small: enough
+# that you can render, look at it, and render again, and not enough to put the
+# pod's memory limit at risk. Bodies beyond this are dropped and the run says
+# so, rather than the pod being killed for holding fifty of them.
+MAX_HELD_IN_MEMORY = 3
 
 
 def _now() -> str:
@@ -50,6 +59,9 @@ class Job:
         self.finished = None
         self.error = None
         self.path = None
+        # Set instead of `path` when the volume could not be written, so a pod
+        # with no usable storage can still show you the report it just built.
+        self.html = None
         self.progress = {"done": 0, "total": 0, "current": ""}
 
     def as_dict(self) -> dict:
@@ -74,9 +86,17 @@ class JobRunner:
     """
 
     def __init__(self, render, runs_path, workers: int = 2,
-                 max_remembered: int = MAX_REMEMBERED):
+                 max_remembered: int = MAX_REMEMBERED, writer=None):
         self.render = render
-        self.runs_path = runs_path
+        self.runs_path = Path(runs_path)
+        # Its own writer rather than the group store's: the strategy is a
+        # property of the mount, and both paths are on the same one, but a
+        # runner constructed for a different path must not inherit a strategy
+        # probed somewhere else.
+        self.writer = writer or VolumeWriter()
+        # Job ids whose report body is held in memory, oldest first, because
+        # the volume refused it.
+        self._held: OrderedDict = OrderedDict()
         self.max_remembered = max_remembered
         self._jobs: OrderedDict = OrderedDict()
         self._by_key: dict = {}
@@ -118,7 +138,15 @@ class JobRunner:
             job.started = _now()
         try:
             html = self.render(job.spec, self._progress(job))
-            path = self._write(job.id, html)
+            path = None
+            try:
+                path = self._write(job.id, html)
+            except OSError as exc:
+                # The volume is not something the person who pressed Render can
+                # do anything about, and the report is already built.
+                self._hold_in_memory(job, html)
+                event("run.write_failed", run_id=job.id,
+                      detail=write_failure_advice(exc))
         except TimeslidesError as exc:
             self._fail(job, f"{type(exc).__name__}: {exc}")
         except Exception as exc:
@@ -147,12 +175,38 @@ class JobRunner:
         event("run.failed", run_id=job.id, groups=job.label, error=job.error)
 
     def _write(self, job_id: str, html: str):
-        self.runs_path.mkdir(parents=True, exist_ok=True)
+        """Write the rendered report to the volume.
+
+        Through the shared writer, not by hand. This method used to do its own
+        temp-file-and-rename, which is the POSIX habit and is exactly what an
+        S3-backed mount refuses: it failed with ENOSYS, Function not
+        implemented, and every render on the deployed app died with it. The
+        group store had already been fixed for the same mount; this had not,
+        because there were two write paths where there should have been one.
+        """
         path = self.runs_path / f"{job_id}.html"
-        tmp = path.with_suffix(".html.tmp")
-        tmp.write_text(html, encoding="utf-8")
-        tmp.replace(path)
+        self.writer.write(path, html)
         return path
+
+    def _hold_in_memory(self, job, html: str) -> None:
+        """Keep a report body in this process because the volume refused it.
+
+        Without this, a pod with no usable storage renders the report, fails to
+        write it, and reports a failed run: the group store degraded gracefully
+        and the renderer did not, so the application was still unusable on a
+        volume it had already said it could work without.
+        """
+        with self._lock:
+            job.html = html
+            self._held[job.id] = True
+            self._held.move_to_end(job.id)
+            while len(self._held) > MAX_HELD_IN_MEMORY:
+                dropped, _ = self._held.popitem(last=False)
+                stale = self._jobs.get(dropped)
+                if stale is not None:
+                    stale.html = None
+        event("run.held_in_memory", run_id=job.id, bytes=len(html),
+              held=len(self._held))
 
     # --- reads ------------------------------------------------------------- #
     def get(self, job_id: str):
@@ -179,6 +233,8 @@ class JobRunner:
                 return
             if self._by_key.get(oldest.spec.key()) == oldest.id:
                 self._by_key.pop(oldest.spec.key(), None)
+            self._held.pop(oldest.id, None)
+            oldest.html = None
             if oldest.path is not None:
                 with contextlib.suppress(OSError):
                     oldest.path.unlink(missing_ok=True)

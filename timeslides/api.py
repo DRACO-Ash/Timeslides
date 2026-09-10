@@ -368,9 +368,14 @@ def _register_runs(app: FastAPI, settings: Settings, store, runner) -> None:
         gets a 304. Starlette does not implement If-None-Match itself, so the
         conditional check is explicit; without it every reload of the Report
         tab pushed another four megabytes.
+
+        A report the volume refused is held in the runner instead and served
+        from there, so a pod with no usable storage can still show you what it
+        just built.
         """
         job = runner.get(run_id)
-        if job.status != DONE or job.path is None or not job.path.exists():
+        on_volume = job.path is not None and job.path.exists()
+        if job.status != DONE or not (on_volume or job.html):
             raise ValidationError(
                 f"run {run_id} is {job.status}; the report is not ready yet")
         etag = f'"{run_id}"'
@@ -381,7 +386,9 @@ def _register_runs(app: FastAPI, settings: Settings, store, runner) -> None:
         }
         if _matches_etag(request.headers.get("if-none-match"), etag):
             return Response(status_code=304, headers=headers)
-        return FileResponse(job.path, media_type="text/html", headers=headers)
+        if on_volume:
+            return FileResponse(job.path, media_type="text/html", headers=headers)
+        return HTMLResponse(job.html, headers=headers)
 
 
 def _matches_etag(header: str | None, etag: str) -> bool:

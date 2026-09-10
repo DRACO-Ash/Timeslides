@@ -58,6 +58,77 @@ Three things the App Store must provide. The first two are hard.
 | Writes only to the volume | Code tree read-only | Ran with the tree owned by root and mode `a-w`; group and report writes landed on the volume owned 1000:1000 |
 | No `ENV PORT=` | Absent from the Dockerfile by design | Read with a default instead |
 
+## The storage volume: one write path, probed not assumed
+
+The File Storage add-on is **S3-backed**, mounted at `STORAGE_MOUNT_PATH`
+(`/data`). S3-backed FUSE mounts commonly implement neither `fsync` nor
+`rename`, and `mountpoint-for-s3` also refuses `mkdir` because an object store
+has no real directories. The POSIX habit of writing a temp file and renaming it
+over the target does not work there: it fails with `ENOSYS`, Function not
+implemented.
+
+This cost three releases, in this order:
+
+1. The group store assumed POSIX. Every save failed. Fixed with a probing
+   writer that walks a ladder of mechanisms.
+2. The boot probe wrote an empty file with `write_text`, taking none of the
+   steps a real write takes, so it reported the volume writable while every
+   save on it failed. A probe that does not run the real path manufactures
+   confidence. Fixed by probing with the real mechanism.
+3. The job runner still had its own hand-rolled temp-and-rename, so saving
+   worked and every render died. **Two write paths meant two chances to get it
+   wrong**, and the unit simulation missed it because it patched one module's
+   `os` while the runner wrote through `pathlib`.
+
+### The contract
+
+● Every filesystem write in the package goes through `timeslides/storage.py`.
+  Nothing else may write. `tests/test_nonposix_e2e.py` fails if a second write
+  path appears anywhere in `timeslides/`. Deleting is exempt: `unlink` works on
+  every mount the app meets.
+● The mechanism is discovered by probing, not assumed. The ladder, best first:
+
+  | Strategy | Mechanism | Crash-safe |
+  |---|---|---|
+  | `atomic` | temp file, flush, `fsync` where implemented, `rename` | yes |
+  | `direct` | written in place | no |
+  | `recreate` | removed then rewritten | no |
+
+● `fsync` is best-effort. It is a durability guarantee, not part of the
+  atomicity guarantee; the rename is what makes a replacement atomic.
+● `mkdir` never fails a write. On an object store the separator only looks like
+  a directory, and `mountpoint-for-s3` refuses `mkdir` on a path that is
+  perfectly writable. The write is the arbiter and reports the real errno.
+● `recreate` removes nothing until the mount has proved it will take a write.
+  Two earlier versions lost data here: the first unlinked with no way back, the
+  second restored afterwards using a different call than the write it was
+  compensating for, so it only ever worked in the test.
+● If no mechanism works, the application degrades rather than breaking. Groups
+  are held in memory, and so are up to `MAX_HELD_IN_MEMORY` rendered reports.
+  A report is several megabytes, so that bound is deliberately small: enough to
+  render, look, and render again, not enough to risk the pod's memory limit.
+● The degradation is never silent: an audit event at boot, a `storage` block on
+  `/healthz` naming the mode and strategy, and a standing warning on the page.
+  A working but non-crash-safe mount gets one quiet line instead of an alarm.
+
+### How it is tested
+
+`tests/test_nonposix_e2e.py` runs the **real server in a subprocess** with the
+relevant syscalls disabled process-wide before the application is imported, and
+drives it over HTTP. Nothing inside the application is stubbed, so any write
+path in any module, through `pathlib` or `os` or `shutil`, meets a filesystem
+that refuses those calls. Four mounts:
+
+| Mount | Disabled | Expected |
+|---|---|---|
+| `s3` | `fsync`, `rename` | `direct`, everything on the volume |
+| `implicitdirs` | `fsync`, `rename`, `mkdir` | `direct`, everything on the volume |
+| `objectstore` | `fsync`, `rename`, overwrite of an existing file | `recreate`, everything on the volume |
+| `readonly` | every write | memory mode, app fully usable, nothing on the volume |
+
+A test that patches a module tests that module. It does not test the mount.
+That distinction is why the third release above shipped broken.
+
 ## Container build: not verified in this session
 
 **The image was not built.** Docker is available here but this session's egress
@@ -253,10 +324,38 @@ honestly rather than failing on infrastructure. Mapping "could not verify" to
 "passed" is the fail-open defect, so the browser suite must be run and seen
 green before an upload, not merely not-failed.
 
+**A green unit suite is not a green deployment.** Three releases shipped a
+volume defect that every unit test passed, because the tests patched a module
+while the platform gave the app a filesystem. `tests/test_nonposix_e2e.py`
+exists for that gap and must be seen green: it runs the real server in a
+subprocess against four crippled filesystems and drives it over HTTP.
+
+Two further checks that no test in the repository can make for you, both worth
+running by hand when the write path or the dependency split changes:
+
+```bash
+# Boot on runtime dependencies ONLY. The image installs requirements-runtime.txt,
+# so a runtime module importing something that lives only in requirements.txt
+# crashes the container while the whole suite still passes.
+python -m venv /tmp/rt && /tmp/rt/bin/pip install -r requirements-runtime.txt
+STORAGE_MOUNT_PATH=/tmp/data TIMESLIDES_DEMO=1 \
+  /tmp/rt/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8099
+
+# As uid 1000, the user the container actually runs as, against a volume owned
+# by root. Expect memory mode and the fsGroup advice, not a crash.
+setpriv --reuid=1000 --regid=1000 --clear-groups /tmp/rt/bin/python -c "..."
+```
+
+Both were run for this build. Runtime-only boot: healthy, three seeded groups,
+catalogue search returned COSMOS 2581/82/83, a group saved, a report rendered
+to 4,508,579 bytes on the volume. As uid 1000: a volume owned 1000:1000 gave
+`mode=volume strategy=atomic` and saved; a volume owned by root gave
+`mode=memory` with `PermissionError EACCES (errno 13)` and the fsGroup advice.
+
 The pipeline simulation was run for this build: a clean directory containing
-only what `git archive` produces, a fresh virtual environment from
-`requirements-dev.txt` alone, `GITLAB_CI=true`, 320 tests passed, coverage.xml
-written, 98 per cent.
+only what `git archive` produces, a fresh virtual environment, the platform's
+own two commands, 532 passed, 1 skipped (no browser), coverage.xml written,
+100 per cent line coverage.
 
 ## Threat model
 

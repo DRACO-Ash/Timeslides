@@ -680,11 +680,14 @@ def test_the_page_carries_no_warning_when_the_volume_is_writable(client):
 class _NoPosixOS:
     """os, as an S3-backed FUSE mount presents it: no fsync, no rename.
 
-    Patched over timeslides.groups.os so the simulation stays inside the store
-    and cannot disturb pytest's or coverage's own file writing. This is the
-    mount the App Store actually provides: the File Storage add-on is S3-backed
-    and mounted at /data, and assuming POSIX there made every save fail with
-    ENOSYS.
+    Patched over timeslides.storage.os, which is now the only place the
+    application writes a file, so one patch covers the group store, the report
+    writer and the command-line output alike. It cannot disturb pytest's or
+    coverage's own file writing.
+
+    This is the mount the App Store actually provides: the File Storage add-on
+    is S3-backed and mounted at /data, and assuming POSIX there made every
+    save and then every render fail with ENOSYS.
     """
 
     def __getattr__(self, name):
@@ -705,7 +708,7 @@ def test_groups_save_to_an_s3_backed_mount_and_stay_on_it(tmp_path, monkeypatch)
     volume, not merely accepted, because a group that only reaches memory does
     not survive the restart the storage add-on was enabled to survive.
     """
-    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    monkeypatch.setattr("timeslides.storage.os", _NoPosixOS())
     settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
     app = create_app(settings=settings, store=GroupStore(settings.groups_file),
                      runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
@@ -726,10 +729,128 @@ def test_groups_save_to_an_s3_backed_mount_and_stay_on_it(tmp_path, monkeypatch)
     assert "COSMOS Triplet" in [g["name"] for g in on_disk["groups"]]
 
 
+def test_a_report_renders_and_lands_on_an_s3_backed_mount(tmp_path, monkeypatch):
+    """The render, on the mount the app is actually given.
+
+    This is the bug the last release shipped. The group store had been fixed
+    for this mount and the job runner had not, because there were two write
+    paths where there should have been one, so saving worked and then every
+    render died with ENOSYS (errno 38), Function not implemented, on
+    '/data/runs/<id>.html.tmp' -> '/data/runs/<id>.html'.
+
+    The simulation missed it too: it was patched over the group store's module,
+    and the runner wrote through pathlib, so the code that broke was never
+    exercised. It is patched over the shared writer now, which is the only
+    place the application writes a file.
+    """
+    monkeypatch.setattr("timeslides.storage.os", _NoPosixOS())
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    app = create_app(settings=settings, store=GroupStore(settings.groups_file),
+                     runner=JobRunner(lambda s, p: "<html>REPORT</html>",
+                                      settings.runs_path))
+    try:
+        with TestClient(app) as c:
+            started = c.post("/api/runs", json={"days": 7})
+            assert started.status_code == 202, started.text
+            run = _await_run(c, started.json()["id"])
+            assert run["status"] == DONE, run
+            served = c.get(run["reportUrl"])
+            assert served.status_code == 200
+            assert "REPORT" in served.text
+    finally:
+        app.state.runner.shutdown()
+
+    # The renderer's writer settled on the mount's real capability, and the
+    # report is on the volume rather than only in a response.
+    assert app.state.runner.writer.strategy == "direct"
+    written = list((tmp_path / "runs").glob("*.html"))
+    assert len(written) == 1, written
+    assert written[0].read_text(encoding="utf-8") == "<html>REPORT</html>"
+    assert not list((tmp_path / "runs").glob("*.tmp")), "no temp file left behind"
+
+
+def _no_volume_app(tmp_path, monkeypatch):
+    """Every write through the shared writer fails, as with no volume mounted.
+
+    Refused at the writer rather than at the store, because refusing only at
+    the store is what let the renderer stay broken: the group store degraded
+    to memory and the job runner went on trying to write a file.
+    """
+    from timeslides.storage import VolumeWriter
+
+    def refuse(_self, _target, _payload):
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+
+    monkeypatch.setattr(VolumeWriter, "write", refuse)
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    return create_app(settings=settings, store=GroupStore(settings.groups_file),
+                      runner=JobRunner(lambda s, p: "<html>HELD</html>",
+                                       settings.runs_path))
+
+
+def test_a_report_the_volume_refused_is_still_served(tmp_path, monkeypatch):
+    """With no usable volume the report is held in this process and served
+    from there. Otherwise the group store degrades gracefully, the renderer
+    does not, and the application is still unusable on a volume it has already
+    said it can work without."""
+    app = _no_volume_app(tmp_path, monkeypatch)
+    try:
+        with TestClient(app) as c:
+            started = c.post("/api/runs", json={"days": 7})
+            run = _await_run(c, started.json()["id"])
+            assert run["status"] == DONE, run
+            served = c.get(run["reportUrl"])
+            assert served.status_code == 200
+            assert served.text == "<html>HELD</html>"
+            assert served.headers["content-type"].startswith("text/html")
+            # And the conditional request still works, so a reload of the
+            # Report tab does not push the whole document again.
+            again = c.get(run["reportUrl"],
+                          headers={"if-none-match": served.headers["etag"]})
+            assert again.status_code == 304
+    finally:
+        app.state.runner.shutdown()
+    assert not list(tmp_path.rglob("*.html")), "nothing should have reached the volume"
+
+
+def test_only_a_few_refused_reports_are_held_at_once(tmp_path, monkeypatch):
+    """A report is several megabytes. Holding fifty would put the pod's memory
+    limit at risk, so the oldest bodies are dropped and their runs say the
+    report is no longer available rather than the pod being killed."""
+    from timeslides.jobs import MAX_HELD_IN_MEMORY
+
+    app = _no_volume_app(tmp_path, monkeypatch)
+    runs = []
+    try:
+        with TestClient(app) as c:
+            for days in range(1, MAX_HELD_IN_MEMORY + 3):
+                started = c.post("/api/runs", json={"days": days})
+                assert started.status_code == 202, started.text
+                runs.append(_await_run(c, started.json()["id"])["id"])
+            held = [r for r in runs
+                    if c.get(f"/api/runs/{r}/report").status_code == 200]
+            gone = [r for r in runs
+                    if c.get(f"/api/runs/{r}/report").status_code == 400]
+    finally:
+        app.state.runner.shutdown()
+    assert len(held) == MAX_HELD_IN_MEMORY, held
+    assert held == runs[-MAX_HELD_IN_MEMORY:], "the most recent are the ones kept"
+    assert len(gone) == len(runs) - MAX_HELD_IN_MEMORY
+
+
+def test_the_store_and_the_runner_do_not_share_one_writer(tmp_path):
+    """Each probes its own path. They are on the same mount in the deployment,
+    but a runner must not inherit a strategy settled somewhere else."""
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    store = GroupStore(settings.groups_file)
+    runner = JobRunner(lambda s, p: "<html/>", settings.runs_path)
+    assert store._writer is not runner.writer
+
+
 def test_an_s3_backed_mount_survives_a_restart(tmp_path, monkeypatch):
     """A second app on the same volume reads back what the first one saved.
     That is the whole reason the storage add-on is attached."""
-    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    monkeypatch.setattr("timeslides.storage.os", _NoPosixOS())
     settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
 
     def build():
@@ -870,7 +991,7 @@ def test_a_non_atomic_mount_gets_a_note_on_the_page_not_a_warning(tmp_path,
     written once and never wired into the page. It rendered nowhere, and only
     the browser test caught it. This makes the wiring itself a unit test.
     """
-    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    monkeypatch.setattr("timeslides.storage.os", _NoPosixOS())
     settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
     app = create_app(settings=settings, store=GroupStore(settings.groups_file),
                      runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
