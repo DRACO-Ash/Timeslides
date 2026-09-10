@@ -42,6 +42,30 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _serve(app):
+    """Start a server on a free port and return its base URL plus a stopper."""
+    import uvicorn
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                           log_config=None, access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    else:                                            # pragma: no cover
+        raise AssertionError("the server did not start")
+
+    def stop():
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    return f"http://127.0.0.1:{port}", stop
+
+
 @pytest.fixture(scope="module")
 def live_server(tmp_path_factory):
     import uvicorn
@@ -368,6 +392,125 @@ def test_a_hostile_group_name_does_not_execute(page, live_server):
     assert page.evaluate("() => document.querySelectorAll('#groups img').length") == 0
     assert page.evaluate("() => window.__xss") is None
     assert fired == []
+    _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  The storage warning, and the layout it must not break
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def unwritable_server(tmp_path_factory):
+    """The app as it behaves with no volume mounted at its storage path."""
+    import errno
+    import os as _os
+
+    from timeslides.api import create_app
+    from timeslides.config import Settings
+    from timeslides.groups import GroupStore, write_failure_advice
+
+    reason = write_failure_advice(OSError(errno.EROFS, _os.strerror(errno.EROFS)))
+
+    class ReadOnlyStore(GroupStore):
+        """Only the volume is broken. Seeding and saving are left alone so the
+        test exercises the app's own fallback rather than a stubbed refusal."""
+
+        def writable(self):
+            return False, reason
+
+    storage = tmp_path_factory.mktemp("readonly")
+    settings = Settings(storage_path=storage, demo=True, classification="OFFICIAL")
+    base, stop = _serve(create_app(settings=settings,
+                                   store=ReadOnlyStore(settings.groups_file)))
+    yield base
+    stop()
+
+
+def test_an_unwritable_volume_warns_without_breaking_the_page(page, unwritable_server):
+    """The warning has to be visible AND leave the tab usable.
+
+    Its first version was added as a child of the .app grid, which has five
+    explicit rows with the 1fr on the fourth. A sixth child took that row and
+    the warning swallowed the whole Configure tab: catalogue, editor, saved
+    groups and render controls all gone. This asserts the geometry, not just
+    the presence of the text, because the class list was correct either way.
+    """
+    page.goto(unwritable_server, wait_until="load")
+    warning = page.locator(".storagewarn")
+    warning.wait_for()
+    assert "kept in memory, not saved" in warning.inner_text()
+    assert "lost when the pod restarts" in warning.inner_text()
+    assert "EROFS" in warning.inner_text()
+
+    # The tab still works: every part of it is present and visible.
+    for selector in ("#q", "#searchbtn", "#gname", "#savebtn", "#groups",
+                     "#runbtn", "#days", "[data-source]"):
+        assert page.locator(selector).first.is_visible(), selector
+
+    # And the warning is a banner, not the whole panel.
+    panel = page.locator('.panel[data-panel="cfg"]').bounding_box()
+    box = warning.bounding_box()
+    assert box["height"] < panel["height"] / 3, \
+        "the warning has taken over the panel instead of sitting above it"
+    _assert_clean(page)
+
+
+def test_the_core_flow_works_with_no_volume(page, unwritable_server):
+    """Add a group of satellites, save it, and run the tool. With no storage
+    volume attached.
+
+    This is the whole point of the application, so it must not depend on an
+    add-on somebody forgot to attach. An earlier build refused every save on
+    an unwritable path, which left the deployed app unusable rather than
+    merely unable to remember anything.
+    """
+    page.goto(unwritable_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    seeded = page.locator("#groups .grp").count()
+    assert seeded == 3, f"the starter groups should still appear, got {seeded}"
+
+    page.fill("#q", "cosmos")
+    page.click("#searchbtn")
+    page.wait_for_selector("#hits .row")
+    for _ in range(3):
+        page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.wait_for_selector("#picked .row:nth-child(3)")
+
+    page.fill("#gname", "COSMOS Triplet")
+    page.dispatch_event("#gname", "input")
+    assert not page.locator("#savebtn").is_disabled()
+    page.click("#savebtn")
+
+    # Saved, listed, and no error where the store would have reported one.
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('#groups .gn')]"
+        ".some(e => e.textContent.trim() === 'COSMOS Triplet')")
+    assert page.locator("#groups .grp").count() == seeded + 1
+    assert page.locator("#savemsg .err").count() == 0, \
+        page.locator("#savemsg").inner_text()
+    # The reminder sits with the group list too, because the banner at the top
+    # of the tab scrolls out of sight on a long list.
+    assert "memory only" in page.locator("#groupsmsg").inner_text()
+
+    # The group is counted into the next render.
+    assert "4" in page.locator("#groupcount").inner_text()
+
+    # And the tool runs. This fixture is in demo mode, which draws fixed
+    # sample panels rather than the requested groups, so the group-to-panel
+    # wiring on the fallback store is asserted against a recording renderer in
+    # test_api.py instead. What matters here is that the button works and a
+    # report comes back with no volume attached.
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".classif").wait_for(timeout=60_000)
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
+    assert frame.locator(".tabs .tab").count() >= 1
+    _assert_clean(page)
+
+
+def test_the_warning_is_absent_when_the_volume_is_writable(page, live_server):
+    page.goto(live_server, wait_until="load")
+    assert page.locator(".storagewarn").count() == 0
     _assert_clean(page)
 
 

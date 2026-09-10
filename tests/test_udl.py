@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 
 import numpy as np
@@ -374,3 +375,65 @@ def test_the_client_uses_a_rate_limiter_of_its_own_when_none_is_injected(tmp_pat
                         udl_rate_per_min=42)
     client = UDLClient(settings, session=object())
     assert client.bucket.rate == pytest.approx(42 / 60)
+
+
+# --------------------------------------------------------------------------- #
+#  Catalogue names: when the tenant spells the field differently
+# --------------------------------------------------------------------------- #
+def test_a_record_with_no_recognised_name_field_logs_the_fields_it_had(client, caplog):
+    """A live deployment showed every object as "OBJECT 62902", meaning none of
+    the name aliases matched that tenant. Guessing at more aliases is a poor
+    way to find out; the record's own field names say which one to add."""
+    c, _ = client([[{"satNo": 62902, "origin": "18SDS",
+                     "someUnknownNameField": "COSMOS 2581"}]])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        got = c._onorbit({})
+    assert got[0]["name"] == "OBJECT 62902"
+    records = [r for r in caplog.records
+               if r.getMessage() == "udl.onorbit.name_missing"]
+    assert len(records) == 1
+    assert "someUnknownNameField" in records[0].fields["record_fields"]
+    assert "satNo" in records[0].fields["record_fields"]
+    assert "name" in records[0].fields["tried"]
+
+
+def test_the_diagnostic_logs_field_names_only_never_values(client, caplog):
+    c, _ = client([[{"satNo": 1, "secretish": "do-not-log-me"}]])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        c._onorbit({})
+    line = next(r for r in caplog.records
+                if r.getMessage() == "udl.onorbit.name_missing")
+    assert "secretish" in line.fields["record_fields"]
+    assert "do-not-log-me" not in json.dumps(line.fields)
+
+
+def test_it_logs_once_per_request_not_once_per_record(client, caplog):
+    rows = [{"satNo": n, "mystery": f"OBJ {n}"} for n in range(1, 21)]
+    c, _ = client([rows])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        c._onorbit({})
+    assert len([r for r in caplog.records
+                if r.getMessage() == "udl.onorbit.name_missing"]) == 1
+
+
+def test_no_diagnostic_when_every_record_carries_a_name(client, caplog):
+    c, _ = client([[{"satNo": 62902, "name": "COSMOS 2581"}]])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        got = c._onorbit({})
+    assert got[0]["name"] == "COSMOS 2581"
+    assert not [r for r in caplog.records
+                if r.getMessage() == "udl.onorbit.name_missing"]
+
+
+@pytest.mark.parametrize("field", ["name", "satName", "altName", "objectName",
+                                   "commonName", "objName", "satelliteName"])
+def test_every_declared_name_alias_is_honoured(client, field):
+    c, _ = client([[{"satNo": 62902, field: "COSMOS 2581"}]])
+    assert c._onorbit({})[0]["name"] == "COSMOS 2581"
+
+
+@pytest.mark.parametrize("field", ["satNo", "satelliteNo", "noradCatId",
+                                   "noradCatID", "satelliteNumber"])
+def test_every_declared_satno_alias_is_honoured(client, field):
+    c, _ = client([[{field: 62902, "name": "COSMOS 2581"}]])
+    assert c._onorbit({})[0]["satNo"] == 62902

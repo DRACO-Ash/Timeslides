@@ -28,7 +28,10 @@ end of a group definition somebody spent time assembling.
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import datetime as dt
+import errno
 import json
 import os
 import re
@@ -58,6 +61,48 @@ SEED_GROUPS = [
     {"name": "COSMOS 2581/82/83", "sats": [62902, 62903, 62904], "reference": 62902},
     {"name": "PRC SpacePlane 4", "sats": [67689, 69673, 59884, 99995], "reference": 67689},
 ]
+
+
+# What the operator should actually do, keyed on the errno rather than a guess.
+# The first version of this message said "if this is EACCES, set fsGroup" for
+# every failure. A live deployment then reported a bare OSError, which cannot
+# be EACCES at all: Python raises PermissionError for EACCES and EPERM, so a
+# plain OSError means something else entirely, and the message sent the
+# operator after the wrong cause.
+_WRITE_ADVICE = {
+    errno.EACCES: (
+        "the volume is not writable by this container's user. The pod runs as "
+        "uid 1000, so the storage volume needs fsGroup set in the pod "
+        "securityContext."),
+    errno.EPERM: (
+        "the operation was not permitted. Check fsGroup in the pod "
+        "securityContext and any securityContext capability restrictions."),
+    errno.EROFS: (
+        "the filesystem is read-only, which usually means no storage volume is "
+        "mounted here at all and this path is part of the container's own "
+        "read-only root. Enable the persistent storage add-on for the app and "
+        "mount it at this path."),
+    errno.ENOSPC: "the volume is full.",
+    errno.EDQUOT: "the volume's quota is exhausted.",
+    errno.EXDEV: (
+        "the temporary file and the target are on different filesystems, so "
+        "the atomic rename cannot complete. Something is mounted over part of "
+        "this path."),
+    errno.ENOENT: "the path does not exist and could not be created.",
+}
+
+
+def write_failure_advice(exc: OSError) -> str:
+    """Name the errno, quote the OS, then say what to do about it."""
+    code = exc.errno
+    name = errno.errorcode.get(code, "unknown")
+    detail = f"{type(exc).__name__} {name}"
+    if code is not None:
+        detail += f" (errno {code})"
+    if exc.strerror:
+        detail += f": {exc.strerror}"
+    advice = _WRITE_ADVICE.get(code)
+    return f"{detail}. {advice}" if advice else detail
 
 
 def _now() -> str:
@@ -151,12 +196,45 @@ class GroupStore:
     def __init__(self, path):
         self.path = Path(path)
         self._lock = threading.Lock()
+        # When the volume cannot be written, the store keeps the document in
+        # process instead of refusing every save. See use_memory_fallback.
+        self._memory = None
+        self._fallback_reason = None
+
+    # --- degraded mode ----------------------------------------------------- #
+    def use_memory_fallback(self, reason: str) -> None:
+        """Serve the group document from memory instead of the volume.
+
+        A missing or read-only volume used to make the application useless:
+        seeding failed, every save returned an error, and the picker, which is
+        the whole point of the change, could not be used at all. Holding the
+        document in process keeps all of that working for the life of the pod.
+
+        This is a degraded mode, not a quiet one. It is logged at boot,
+        reported on /healthz, and carries a standing warning on the page,
+        because the groups really will be lost when the pod restarts.
+        """
+        with self._lock:
+            if self._memory is None:
+                self._memory = self._empty()
+            self._fallback_reason = reason
+        event("storage.memory_fallback", path=str(self.path), reason=reason)
+
+    @property
+    def persistent(self) -> bool:
+        return self._memory is None
+
+    @property
+    def fallback_reason(self):
+        return self._fallback_reason
 
     # --- document level ---------------------------------------------------- #
     def _empty(self) -> dict:
         return {"rev": 0, "groups": []}
 
     def _read(self) -> dict:
+        if self._memory is not None:
+            return copy.deepcopy(self._memory)
         if not self.path.exists():
             return self._empty()
         try:
@@ -175,8 +253,15 @@ class GroupStore:
         return doc
 
     def _write(self, doc: dict) -> dict:
-        """Atomic replace: temp file in the same directory, fsync, rename."""
+        """Atomic replace: temp file in the same directory, fsync, rename.
+
+        In memory-fallback mode the document is kept in process instead, so a
+        missing volume degrades persistence rather than breaking every write.
+        """
         doc["rev"] = int(doc.get("rev", 0)) + 1
+        if self._memory is not None:
+            self._memory = copy.deepcopy(doc)
+            return doc
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         payload = json.dumps(doc, indent=2, sort_keys=True)
@@ -187,12 +272,11 @@ class GroupStore:
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
         except OSError as exc:
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise ValidationError(
-                f"could not write the group store at {self.path}: {type(exc).__name__}. "
-                "If this is EACCES, the storage volume needs fsGroup set in the "
-                "pod securityContext so a non-root container can write to it."
-            ) from exc
+                f"could not write the group store at {self.path}: "
+                f"{write_failure_advice(exc)}") from exc
         return doc
 
     def _check_rev(self, doc: dict, expected) -> None:
@@ -203,6 +287,20 @@ class GroupStore:
                 f"the group list changed since you loaded it (you have revision "
                 f"{expected}, the store is at {doc['rev']}). Reload and reapply "
                 "your change so you do not overwrite someone else's edit.")
+
+    def writable(self) -> tuple:
+        """(ok, detail). Try a real write, because stat cannot tell you whether
+        a volume is read-only or whether fsGroup was applied."""
+        probe = self.path.with_name(f".writetest.{os.getpid()}")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            probe.write_text("", encoding="utf-8")
+        except OSError as exc:
+            return False, write_failure_advice(exc)
+        finally:
+            with contextlib.suppress(OSError):
+                probe.unlink(missing_ok=True)
+        return True, "writable"
 
     # --- reads ------------------------------------------------------------- #
     def load(self, include_archived: bool = False) -> dict:

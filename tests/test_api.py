@@ -103,8 +103,11 @@ def test_the_shell_carries_both_tabs_and_the_classification(client):
     assert "OFFICIAL" in body
 
 
-def test_healthz_reports_the_mode(client):
-    assert client.get("/healthz").json() == {"status": "ok", "demo": False}
+def test_healthz_reports_the_mode_and_the_storage_state(client):
+    body = client.get("/healthz").json()
+    assert body["status"] == "ok"
+    assert body["demo"] is False
+    assert set(body["storage"]) == {"writable", "mode", "detail", "path"}
 
 
 def test_the_api_schema_is_not_published(client):
@@ -251,7 +254,12 @@ def test_an_identical_run_joins_rather_than_re_rendering(client, app_bits):
     _, _, _, rendered = app_bits
     first = client.post("/api/runs", json={"days": 7}).json()
     _await_run(client, first["id"])
-    second = client.post("/api/runs", json={"days": 7}).json()
+    posted = client.post("/api/runs", json={"days": 7})
+    # Assert the status before reading the body: a 429 from the rate limiter
+    # would otherwise surface as a bare KeyError on "joined" and read as a
+    # broken join rather than a throttled request.
+    assert posted.status_code == 202, posted.text
+    second = posted.json()
     assert second["joined"] is True
     assert second["id"] == first["id"]
     assert len(rendered) == 1
@@ -649,3 +657,145 @@ def test_the_apps_own_renderer_serves_demo_data_in_demo_mode(tmp_path):
             assert "OFFICIAL" in report
     finally:
         app.state.runner.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+#  Storage state: visible at boot, on /healthz and in the page
+# --------------------------------------------------------------------------- #
+def test_a_writable_volume_is_reported_as_such(client):
+    body = client.get("/healthz").json()
+    assert body["storage"]["writable"] is True
+    assert body["storage"]["detail"] == "writable"
+    assert body["storage"]["path"].endswith("groups.json")
+
+
+def test_the_page_carries_no_warning_when_the_volume_is_writable(client):
+    assert "kept in memory" not in client.get("/").text
+
+
+def _unwritable_app(tmp_path, rendered=None):
+    """A store whose volume refuses writes, the way an unmounted or
+    root-owned /data does. Nothing else is stubbed: the app is left to cope
+    with it exactly as it would in the cluster.
+
+    Pass `rendered` to capture the specs the runner is handed, so a test can
+    assert what actually reached the renderer.
+    """
+
+    class UnwritableStore(GroupStore):
+        def writable(self):
+            return False, ("OSError EROFS (errno 30): Read-only file system. the "
+                           "filesystem is read-only, which usually means no storage "
+                           "volume is mounted here at all.")
+
+    def render(spec, progress):
+        if rendered is not None:
+            rendered.append(spec)
+        return "<!DOCTYPE html><html><body>REPORT</body></html>"
+
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    return create_app(settings=settings, store=UnwritableStore(settings.groups_file),
+                      runner=JobRunner(render, settings.runs_path))
+
+
+def test_an_unwritable_volume_is_reported_without_failing_readiness(tmp_path):
+    """Readiness is about whether this pod can serve, and it can: groups fall
+    back to memory and the report path never needed the volume. So the probe
+    target and health both stay 200 and the problem is reported in the body."""
+    with TestClient(_unwritable_app(tmp_path)) as c:
+        assert c.get("/").status_code == 200
+        health = c.get("/healthz")
+        assert health.status_code == 200
+        assert health.json()["storage"]["writable"] is False
+        assert health.json()["storage"]["mode"] == "memory"
+        assert "EROFS" in health.json()["storage"]["detail"]
+
+
+def test_a_writable_volume_reports_volume_mode(client):
+    assert client.get("/healthz").json()["storage"]["mode"] == "volume"
+
+
+def test_groups_can_still_be_created_and_listed_with_no_volume(tmp_path):
+    """The core operation. Adding and saving a group is the whole point of the
+    application, so it must not depend on an add-on somebody forgot to attach."""
+    app = _unwritable_app(tmp_path)
+    with TestClient(app) as c:
+        seeded = c.get("/api/groups").json()["groups"]
+        assert seeded, "the starter groups should still be there"
+        made = c.post("/api/groups", json={"name": "COSMOS Triplet",
+                                           "sats": [62902, 62903, 62904],
+                                           "reference": 62902})
+        assert made.status_code == 201, made.text
+        names = [g["name"] for g in c.get("/api/groups").json()["groups"]]
+        assert "COSMOS Triplet" in names
+        assert len(names) == len(seeded) + 1
+    assert not (tmp_path / "groups.json").exists(), "nothing should reach the volume"
+
+
+def test_a_report_can_be_run_from_a_group_saved_with_no_volume(tmp_path):
+    """Save then run, end to end, on the fallback store.
+
+    The recording renderer is the point: it proves the group that only ever
+    existed in memory is the one the renderer was asked to draw, not merely
+    that some report came back.
+    """
+    rendered = []
+    app = _unwritable_app(tmp_path, rendered)
+    try:
+        with TestClient(app) as c:
+            made = c.post("/api/groups", json={"name": "Run Me",
+                                               "sats": [62902, 62903],
+                                               "reference": 62902})
+            assert made.status_code == 201, made.text
+            gid = made.json()["id"]
+            started = c.post("/api/runs", json={"groupIds": [gid]})
+            assert started.status_code == 202, started.text
+            run = _await_run(c, started.json()["id"])
+            assert run["status"] == DONE, run
+            assert c.get(run["reportUrl"]).status_code == 200
+    finally:
+        app.state.runner.shutdown()
+    assert len(rendered) == 1
+    assert rendered[0].group_ids == (gid,)
+
+
+def test_a_run_over_every_group_includes_one_saved_with_no_volume(tmp_path):
+    """The Render report button sends no group ids, so the run has to pick up
+    the in-memory group alongside the seeded ones."""
+    rendered = []
+    app = _unwritable_app(tmp_path, rendered)
+    try:
+        with TestClient(app) as c:
+            gid = c.post("/api/groups", json={"name": "Fallback Group",
+                                              "sats": [62902, 62903],
+                                              "reference": 62902}).json()["id"]
+            started = c.post("/api/runs", json={"days": 7})
+            _await_run(c, started.json()["id"])
+    finally:
+        app.state.runner.shutdown()
+    assert gid in rendered[0].group_ids
+    assert len(rendered[0].group_ids) == 4
+
+
+def test_an_unwritable_volume_puts_a_standing_warning_on_the_page(tmp_path):
+    """Groups still save, but only into this process, so say so plainly rather
+    than letting somebody trust a group that a restart will delete."""
+    with TestClient(_unwritable_app(tmp_path)) as c:
+        page = c.get("/").text
+    assert "kept in memory, not saved" in page
+    assert "lost when the pod restarts" in page
+    assert "persistent storage add-on" in page
+    assert "EROFS" in page
+    assert "no storage volume is mounted" in page
+
+
+def test_the_boot_probe_is_recorded_as_an_audit_event(tmp_path, capsys):
+    _unwritable_app(tmp_path)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+             if line.startswith("{")]
+    probes = [line for line in lines if line["msg"] == "boot.storage"]
+    assert len(probes) == 1
+    assert probes[0]["writable"] is False
+    assert probes[0]["mode"] == "memory"
+    assert "EROFS" in probes[0]["detail"]
+    assert any(line["msg"] == "storage.memory_fallback" for line in lines)

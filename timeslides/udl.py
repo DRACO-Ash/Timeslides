@@ -33,9 +33,10 @@ from .ratelimit import TokenBucket
 
 # UDL onorbit record -> what this application calls it. One place to correct.
 ONORBIT_FIELDS = {
-    "sat_no": ("satNo", "satelliteNo", "noradCatId"),
-    "name": ("name", "satName", "altName", "objectName"),
-    "int_des": ("intlDes", "internationalDesignator"),
+    "sat_no": ("satNo", "satelliteNo", "noradCatId", "noradCatID", "satelliteNumber"),
+    "name": ("name", "satName", "altName", "objectName", "commonName",
+             "objName", "satelliteName", "origObjectId", "objectId"),
+    "int_des": ("intlDes", "internationalDesignator", "intlDesignator"),
     "country": ("countryCode", "country", "origin"),
     "object_type": ("objectType", "type"),
     "launch_date": ("launchDate",),
@@ -208,6 +209,7 @@ class UDLClient:
     def _onorbit(self, params: dict) -> list:
         records = self._get("/udl/onorbit", {"maxResults": 500, **params})
         out = []
+        nameless = None
         for rec in records:
             sat_no = _first(rec, ONORBIT_FIELDS["sat_no"])
             if sat_no is None:
@@ -216,14 +218,25 @@ class UDLClient:
                 sat_no = int(sat_no)
             except (TypeError, ValueError):
                 continue
+            name = _first(rec, ONORBIT_FIELDS["name"])
+            if name is None and nameless is None:
+                nameless = sorted(rec.keys())
             out.append({
                 "satNo": sat_no,
-                "name": str(_first(rec, ONORBIT_FIELDS["name"]) or f"OBJECT {sat_no}"),
+                "name": str(name or f"OBJECT {sat_no}"),
                 "intlDes": _first(rec, ONORBIT_FIELDS["int_des"]),
                 "country": _first(rec, ONORBIT_FIELDS["country"]),
                 "objectType": _first(rec, ONORBIT_FIELDS["object_type"]),
                 "launchDate": _first(rec, ONORBIT_FIELDS["launch_date"]),
                 "decayDate": _first(rec, ONORBIT_FIELDS["decay_date"])})
+        if nameless is not None:
+            # The picker fell back to "OBJECT <number>" because none of the
+            # aliases in ONORBIT_FIELDS["name"] matched this tenant's records.
+            # The record's field names are logged so the right one can be added
+            # in a single edit rather than guessed at. Keys only, never values.
+            event("udl.onorbit.name_missing",
+                  tried=",".join(ONORBIT_FIELDS["name"]),
+                  record_fields=",".join(nameless))
         return out
 
     def objects_by_satno(self, sat_nos) -> dict:

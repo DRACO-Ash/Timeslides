@@ -94,18 +94,42 @@ def create_app(settings: Settings = None, store=None, runner=None,
         return build_report(groups, _client(), spec, progress=progress)
 
     runner = runner or JobRunner(_render, settings.runs_path)
+    storage = _check_storage(store)
     _seed_groups(store)
     app.state.settings = settings
     app.state.store = store
     app.state.runner = runner
+    app.state.storage = storage
 
     _register_error_handler(app)
-    _register_ui(app, settings)
+    _register_ui(app, settings, storage)
     _register_groups(app, store)
     _register_catalogue(app, settings, _client)
     _register_sources(app, settings, store, _client)
     _register_runs(app, settings, store, runner)
     return app
+
+
+def _check_storage(store) -> dict:
+    """Probe the volume at boot, and fall back to memory if it cannot be used.
+
+    A missing or read-only volume used to make the application useless: seeding
+    failed, every save returned an error, and the picker could not be used at
+    all. It now keeps the group document in process instead, so the whole
+    application works for the life of the pod. Groups really are lost on
+    restart, so the degradation is reported three ways: an audit event here,
+    the storage block on /healthz, and a standing warning on the page.
+
+    Boot is never blocked. Refusing to start would be harder to diagnose than
+    starting and saying what is wrong.
+    """
+    ok, detail = store.writable()
+    if not ok:
+        store.use_memory_fallback(detail)
+    event("boot.storage", path=str(store.path), writable=ok,
+          mode="volume" if ok else "memory", detail=detail)
+    return {"writable": ok, "mode": "volume" if ok else "memory",
+            "detail": detail, "path": str(store.path)}
 
 
 def _seed_groups(store) -> None:
@@ -141,15 +165,23 @@ def _register_error_handler(app: FastAPI) -> None:
 # --------------------------------------------------------------------------- #
 #  UI and health
 # --------------------------------------------------------------------------- #
-def _register_ui(app: FastAPI, settings: Settings) -> None:
+def _register_ui(app: FastAPI, settings: Settings, storage: dict) -> None:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         """The shell, and the platform's readiness target. No upstream calls."""
-        return HTMLResponse(render_shell(settings.classification, settings.demo))
+        return HTMLResponse(render_shell(settings.classification, settings.demo,
+                                         storage=storage))
 
     @app.get("/healthz")
     async def healthz():
-        return {"status": "ok", "demo": settings.demo}
+        """Deliberately still 200 when the volume is unwritable.
+
+        Readiness is about whether this pod can serve, and it can: the report
+        path and demo mode do not need the volume. The storage state is
+        reported so the problem is visible without reading pod logs, not so a
+        probe fails on it.
+        """
+        return {"status": "ok", "demo": settings.demo, "storage": storage}
 
 
 # --------------------------------------------------------------------------- #

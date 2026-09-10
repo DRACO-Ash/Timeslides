@@ -176,12 +176,23 @@ function nameFor(group, satNo) {
 }
 
 /* --- group list --------------------------------------------------------- */
+/* The banner at the top of the tab says this too, but the saved-groups list is
+ * where somebody looks to check their work, and on a long list it scrolls well
+ * clear of the banner. Repeating it here means the reminder is next to the
+ * thing it applies to. */
+const MEMORY_NOTE =
+  "Kept in memory only: these groups will be lost when the pod restarts.";
+
+function groupsStatus() {
+  return CFG.storageWritable ? "" : MEMORY_NOTE;
+}
+
 async function loadGroups() {
   try {
     const body = await api("/api/groups");
     S.rev = body.rev;
     S.groups = body.groups || [];
-    show("groupsmsg", "");
+    show("groupsmsg", groupsStatus());
   } catch (err) {
     show("groupsmsg", `Could not load groups: ${err.message}`, true);
   }

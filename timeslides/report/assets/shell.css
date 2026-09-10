@@ -22,6 +22,9 @@
 .cfgmain h2{font:600 11px/1.2 var(--mono); letter-spacing:.14em; color:var(--dim);
             text-transform:uppercase; margin:0 0 10px}
 .cfgmain section{margin-bottom:26px}
+/* Sits inside the Configure panel, not in the .app grid. Added as a grid child
+ * it took the 1fr row that belongs to .panels and swallowed the whole tab. */
+.storagewarn{margin:0 0 22px}
 
 /* Search */
 .search{display:flex; gap:8px; margin-bottom:10px}

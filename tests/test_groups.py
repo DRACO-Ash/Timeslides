@@ -3,8 +3,10 @@ revision check that stops one person's save discarding another's."""
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import pathlib
 import threading
 
 import pytest
@@ -430,3 +432,198 @@ def test_seeding_is_idempotent(store):
 def test_every_seed_group_passes_the_same_validation_as_a_submitted_one():
     for payload in SEED_GROUPS:
         clean_group(payload)
+
+
+# --------------------------------------------------------------------------- #
+#  Write failures must name the real cause
+#
+#  The first version of the message said "if this is EACCES, set fsGroup" for
+#  every failure. A live deployment then reported a bare OSError, which cannot
+#  be EACCES: Python raises PermissionError for EACCES and EPERM, so a plain
+#  OSError is something else and the message sent the operator after the wrong
+#  cause. These tests hold each errno to its own advice.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("code,expect", [
+    (errno.EACCES, "fsGroup"),
+    (errno.EPERM, "fsGroup"),
+    (errno.EROFS, "no storage volume is mounted"),
+    (errno.ENOSPC, "volume is full"),
+    (errno.EDQUOT, "quota is exhausted"),
+    (errno.EXDEV, "different filesystems"),
+    (errno.ENOENT, "does not exist"),
+])
+def test_each_write_failure_gets_advice_matched_to_its_errno(code, expect):
+    from timeslides.groups import write_failure_advice
+    advice = write_failure_advice(OSError(code, os.strerror(code)))
+    assert expect in advice
+    assert errno.errorcode[code] in advice, "the errno name must be quoted"
+    assert f"errno {code}" in advice
+
+
+def test_a_read_only_volume_is_not_reported_as_a_permissions_problem():
+    """The exact confusion from the live deployment."""
+    from timeslides.groups import write_failure_advice
+    advice = write_failure_advice(OSError(errno.EROFS, os.strerror(errno.EROFS)))
+    assert "fsGroup" not in advice
+    assert "read-only" in advice
+    assert "storage add-on" in advice
+
+
+def test_an_unrecognised_errno_still_reports_what_the_os_said():
+    from timeslides.groups import write_failure_advice
+    advice = write_failure_advice(OSError(9999, "something odd"))
+    assert "something odd" in advice
+    assert "errno 9999" in advice
+
+
+def test_the_store_reports_the_real_errno_when_a_write_fails(tmp_path, monkeypatch):
+    store = GroupStore(tmp_path / "groups.json")
+    payload = _group()
+
+    def read_only(*_args, **_kwargs):
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+
+    monkeypatch.setattr(os, "replace", read_only)
+    with pytest.raises(ValidationError, match="EROFS"):
+        store.create(payload)
+
+
+# --------------------------------------------------------------------------- #
+#  The boot-time writability probe
+# --------------------------------------------------------------------------- #
+def test_a_writable_volume_probes_clean_and_leaves_nothing_behind(tmp_path):
+    store = GroupStore(tmp_path / "nested" / "groups.json")
+    ok, detail = store.writable()
+    assert ok is True
+    assert detail == "writable"
+    assert list((tmp_path / "nested").iterdir()) == [], "the probe file must be removed"
+
+
+def test_an_unwritable_volume_probes_dirty_with_the_reason(tmp_path, monkeypatch):
+    store = GroupStore(tmp_path / "groups.json")
+    real_write = pathlib.Path.write_text
+
+    def refuse(self, *args, **kwargs):
+        if self.name.startswith(".writetest"):
+            raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", refuse)
+    ok, detail = store.writable()
+    assert ok is False
+    assert "EROFS" in detail
+    assert "storage add-on" in detail
+
+
+# --------------------------------------------------------------------------- #
+#  Memory fallback: a missing volume degrades persistence, not the application
+#
+#  A live deployment had no volume at its storage path. Seeding failed, every
+#  save returned an error, and the picker, which is the whole point of the
+#  change, could not be used at all. The store now keeps the document in
+#  process instead. Groups genuinely are lost on restart, and that is reported
+#  in three places, but the application works.
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def memory_store(tmp_path):
+    store = GroupStore(tmp_path / "unreachable" / "groups.json")
+    store.use_memory_fallback("OSError EROFS (errno 30): Read-only file system.")
+    return store
+
+
+def test_a_store_starts_persistent(tmp_path):
+    store = GroupStore(tmp_path / "groups.json")
+    assert store.persistent is True
+    assert store.fallback_reason is None
+
+
+def test_the_fallback_reports_itself(memory_store):
+    assert memory_store.persistent is False
+    assert "EROFS" in memory_store.fallback_reason
+
+
+def test_seeding_works_in_memory(memory_store):
+    assert memory_store.seed_if_empty() == len(SEED_GROUPS)
+    assert [g["name"] for g in memory_store.active()] == \
+        [g["name"] for g in SEED_GROUPS]
+
+
+def test_the_full_group_lifecycle_works_in_memory(memory_store):
+    created = memory_store.create(_group())
+    assert memory_store.get(created["id"])["name"] == created["name"]
+
+    updated = memory_store.update(created["id"], _group(sats=[1, 2, 3], reference=2))
+    assert updated["sats"] == [1, 2, 3]
+    assert updated["created"] == created["created"]
+
+    memory_store.archive(created["id"])
+    assert memory_store.active() == []
+    memory_store.restore(created["id"])
+    assert [g["id"] for g in memory_store.active()] == [created["id"]]
+
+
+def test_revisions_still_advance_in_memory(memory_store):
+    assert memory_store.load()["rev"] == 0
+    created = memory_store.create(_group())
+    assert memory_store.load()["rev"] == 1
+    memory_store.update(created["id"], _group(sats=[9, 8], reference=9))
+    assert memory_store.load()["rev"] == 2
+
+
+def test_the_stale_revision_check_still_applies_in_memory(memory_store):
+    created = memory_store.create(_group())
+    stale = memory_store.load()["rev"]
+    memory_store.update(created["id"], _group(sats=[1, 2], reference=1))
+    mine = _group(sats=[5, 6], reference=5)
+    with pytest.raises(ConflictError):
+        memory_store.update(created["id"], mine, expected_rev=stale)
+
+
+def test_validation_still_applies_in_memory(memory_store):
+    too_few = _group(sats=[59884])
+    with pytest.raises(ValidationError, match="at least"):
+        memory_store.create(too_few)
+
+
+def test_duplicate_names_are_still_refused_in_memory(memory_store):
+    memory_store.create(_group())
+    same = _group(sats=[1, 2], reference=1)
+    with pytest.raises(ValidationError, match="already exists"):
+        memory_store.create(same)
+
+
+def test_nothing_is_written_to_disk_in_memory_mode(memory_store, tmp_path):
+    memory_store.seed_if_empty()
+    memory_store.create(_group(name="Ephemeral"))
+    assert not memory_store.path.exists()
+    assert not memory_store.path.parent.exists()
+
+
+def test_reads_are_snapshots_so_a_caller_cannot_mutate_the_store(memory_store):
+    """The file-backed store hands out fresh objects parsed from JSON. The
+    memory store must not hand out its own, or a caller editing what it read
+    would silently rewrite the store."""
+    created = memory_store.create(_group())
+    doc = memory_store.load()
+    doc["groups"][0]["name"] = "TAMPERED"
+    doc["groups"][0]["sats"].append(99999)
+    assert memory_store.get(created["id"])["name"] == created["name"]
+    assert memory_store.get(created["id"])["sats"] == created["sats"]
+
+
+def test_engaging_the_fallback_twice_keeps_the_existing_document(memory_store):
+    created = memory_store.create(_group())
+    memory_store.use_memory_fallback("probed again")
+    assert [g["id"] for g in memory_store.active()] == [created["id"]]
+    assert memory_store.fallback_reason == "probed again"
+
+
+def test_the_fallback_is_recorded_as_an_audit_event(tmp_path, caplog):
+    import logging
+    store = GroupStore(tmp_path / "groups.json")
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        store.use_memory_fallback("OSError EROFS (errno 30)")
+    records = [r for r in caplog.records
+               if r.getMessage() == "storage.memory_fallback"]
+    assert len(records) == 1
+    assert "EROFS" in records[0].fields["reason"]

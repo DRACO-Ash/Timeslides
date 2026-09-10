@@ -64,7 +64,8 @@ REPORT_DATA = {
     "srclbl": {"leolabs": "LeoLabs", "northstar": "NorthStar", "kbr": "KBR",
                "ppec": "PPEC", "spacetrack": "Space-Track", "elset": "Element sets"},
 }
-SHELL_DATA = {"demo": True, "classification": "OFFICIAL"}
+SHELL_DATA = {"demo": True, "classification": "OFFICIAL",
+              "storageWritable": True}
 
 
 def _context(asset: str, payloads: dict):
@@ -109,6 +110,20 @@ def test_picker_js_loads_and_reads_its_payload(picker_js):
     assert _call(picker_js, "CFG.demo") is True
     assert _call(picker_js, "CFG.classification") == "OFFICIAL"
     assert _call(picker_js, "typeof __handlers.load") == "function"
+
+
+def test_the_saved_group_list_carries_no_note_when_storage_persists(picker_js):
+    assert _call(picker_js, "groupsStatus()") == ""
+
+
+def test_the_saved_group_list_warns_when_groups_are_only_in_memory():
+    """The banner at the top of the tab can be scrolled clear of the group
+    list, so the list says it too."""
+    ctx = _context("picker.js", {"shell-data": {**SHELL_DATA,
+                                                "storageWritable": False}})
+    note = _call(ctx, "groupsStatus()")
+    assert "memory only" in note
+    assert "lost when the pod restarts" in note
 
 
 def test_picker_js_starts_with_an_empty_working_set(picker_js):

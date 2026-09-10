@@ -54,7 +54,7 @@ def _source_chips() -> str:
         for s in STATE_SOURCES)
 
 
-def _configure_panel() -> str:
+def _configure_panel(storage=None) -> str:
     return f"""
 <section class="panel cfg active" data-panel="cfg">
   <div class="cfgwrap">
@@ -72,6 +72,7 @@ def _configure_panel() -> str:
       </div>
     </aside>
     <div class="cfgmain">
+      {_storage_banner(storage)}
       <section>
         <h2>Group being built <span class="gm" id="editing"></span></h2>
         <div class="search">
@@ -147,11 +148,33 @@ def _report_panel() -> str:
 </section>"""
 
 
-def render_shell(classification: str, demo: bool = False) -> str:
+def _storage_banner(storage) -> str:
+    """A standing warning when the group store is running from memory.
+
+    The application still works in that state: groups can be built, saved,
+    edited and rendered. What it cannot do is survive a restart. Saying so
+    plainly beats both silence and the earlier behaviour, which was to refuse
+    every save and read as a broken application.
+    """
+    if not storage or storage.get("writable"):
+        return ""
+    return ('<div class="err storagewarn" role="alert">'
+            '<b>Groups are being kept in memory, not saved.</b> '
+            "Everything here works, but any group you build will be lost when "
+            "the pod restarts. To make groups persist, enable the persistent "
+            "storage add-on for this app and mount it at "
+            + esc(str(storage.get("path", "the configured storage path")))
+            + '. <span style="color:var(--muted)">Reported by the volume: '
+            + esc(str(storage.get("detail", "not writable")))
+            + "</span></div>")
+
+
+def render_shell(classification: str, demo: bool = False, storage=None) -> str:
     """The application page. Self-contained; no external requests."""
     banner = esc(classification.upper())
     mode_note = ' &middot; <b style="color:var(--copper)">DEMO DATA</b>' if demo else ""
-    payload = json_for_html({"demo": bool(demo), "classification": classification})
+    payload = json_for_html({"demo": bool(demo), "classification": classification,
+                             "storageWritable": bool((storage or {}).get("writable", True))})
     body = f"""
 <div class="app">
   <div class="classif">{banner}</div>
@@ -166,7 +189,7 @@ def render_shell(classification: str, demo: bool = False) -> str:
     <button class="tab active" data-tab="cfg">Configure</button>
     <button class="tab" data-tab="rep">Report</button>
   </nav>
-  <div class="panels">{_configure_panel()}{_report_panel()}</div>
+  <div class="panels">{_configure_panel(storage)}{_report_panel()}</div>
   <div class="foot">
     <span>BLUESTAQ LIMITED &nbsp;&middot;&nbsp; MISSION CRITICAL SOLUTIONS</span>
     <span class="r"><span>UDL</span></span>
