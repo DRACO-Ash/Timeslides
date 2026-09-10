@@ -9,6 +9,7 @@ credentials and no network.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -423,6 +424,97 @@ def unwritable_server(tmp_path_factory):
                                    store=ReadOnlyStore(settings.groups_file)))
     yield base
     stop()
+
+
+@pytest.fixture
+def s3_server(tmp_path_factory, monkeypatch):
+    """The app on the volume it is actually given.
+
+    The File Storage add-on is S3-backed and mounted at /data. Such mounts
+    implement neither fsync nor rename, and assuming POSIX there made every
+    save fail with ENOSYS (errno 38), Function not implemented. The patch is
+    applied to the store's own module so it cannot disturb pytest's or
+    coverage's file writing.
+    """
+    import errno
+    import os as _os
+
+    from timeslides.api import create_app
+    from timeslides.config import Settings
+    from timeslides.groups import GroupStore
+
+    class NoPosixOS:
+        def __getattr__(self, name):
+            return getattr(_os, name)
+
+        def replace(self, *_a, **_k):
+            raise OSError(errno.ENOSYS, _os.strerror(errno.ENOSYS))
+
+        def fsync(self, *_a, **_k):
+            raise OSError(errno.ENOSYS, _os.strerror(errno.ENOSYS))
+
+    monkeypatch.setattr("timeslides.groups.os", NoPosixOS())
+    storage = tmp_path_factory.mktemp("s3mount")
+    settings = Settings(storage_path=storage, demo=True, classification="OFFICIAL")
+    base, stop = _serve(create_app(settings=settings,
+                                   store=GroupStore(settings.groups_file)))
+    yield base, storage
+    stop()
+
+
+def test_a_group_saves_to_an_s3_backed_mount_and_lands_on_the_volume(page, s3_server):
+    """The operator's question, on the operator's volume: add a group of
+    satellites, save it, and run the tool.
+
+    The volume assertion is the one that matters. Accepting the save is not
+    enough; the group has to be on the volume, because that is what the storage
+    add-on was enabled for.
+    """
+    base, storage = s3_server
+    page.goto(base, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+
+    # No alarm, because nothing is wrong: this mount works.
+    assert page.locator(".storagewarn").count() == 0
+
+    page.fill("#q", "cosmos")
+    page.click("#searchbtn")
+    page.wait_for_selector("#hits .row")
+    for _ in range(3):
+        page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.wait_for_selector("#picked .row:nth-child(3)")
+
+    page.fill("#gname", "COSMOS Triplet")
+    page.dispatch_event("#gname", "input")
+    page.click("#savebtn")
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('#groups .gn')]"
+        ".some(e => e.textContent.trim() === 'COSMOS Triplet')")
+    assert page.locator("#savemsg .err").count() == 0, \
+        page.locator("#savemsg").inner_text()
+
+    on_disk = json.loads((storage / "groups.json").read_text(encoding="utf-8"))
+    assert "COSMOS Triplet" in [g["name"] for g in on_disk["groups"]], \
+        "the group was accepted but never reached the volume"
+
+    # And the tool runs.
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
+    _assert_clean(page)
+
+
+def test_a_mount_without_atomic_replace_says_so_without_alarm(page, s3_server):
+    """Saving works, so this is a note, not the memory warning."""
+    base, _ = s3_server
+    page.goto(base, wait_until="load")
+    note = page.locator(".storagenote")
+    note.wait_for()
+    assert "will survive a restart" in note.inner_text()
+    assert "could leave the file truncated" in note.inner_text()
+    assert page.locator(".storagewarn").count() == 0
+    _assert_clean(page)
 
 
 def test_an_unwritable_volume_warns_without_breaking_the_page(page, unwritable_server):

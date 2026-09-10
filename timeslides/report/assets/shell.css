@@ -25,6 +25,7 @@
 /* Sits inside the Configure panel, not in the .app grid. Added as a grid child
  * it took the 1fr row that belongs to .panels and swallowed the whole tab. */
 .storagewarn{margin:0 0 22px}
+.storagenote{margin:0 0 22px}
 
 /* Search */
 .search{display:flex; gap:8px; margin-bottom:10px}

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import json
+import os
 import time
 
 import pytest
@@ -107,7 +109,8 @@ def test_healthz_reports_the_mode_and_the_storage_state(client):
     body = client.get("/healthz").json()
     assert body["status"] == "ok"
     assert body["demo"] is False
-    assert set(body["storage"]) == {"writable", "mode", "detail", "path"}
+    assert set(body["storage"]) == {"writable", "mode", "strategy",
+                                    "detail", "path"}
 
 
 def test_the_api_schema_is_not_published(client):
@@ -665,12 +668,81 @@ def test_the_apps_own_renderer_serves_demo_data_in_demo_mode(tmp_path):
 def test_a_writable_volume_is_reported_as_such(client):
     body = client.get("/healthz").json()
     assert body["storage"]["writable"] is True
-    assert body["storage"]["detail"] == "writable"
+    assert body["storage"]["detail"].startswith("writable")
+    assert body["storage"]["strategy"] == "atomic"
     assert body["storage"]["path"].endswith("groups.json")
 
 
 def test_the_page_carries_no_warning_when_the_volume_is_writable(client):
     assert "kept in memory" not in client.get("/").text
+
+
+class _NoPosixOS:
+    """os, as an S3-backed FUSE mount presents it: no fsync, no rename.
+
+    Patched over timeslides.groups.os so the simulation stays inside the store
+    and cannot disturb pytest's or coverage's own file writing. This is the
+    mount the App Store actually provides: the File Storage add-on is S3-backed
+    and mounted at /data, and assuming POSIX there made every save fail with
+    ENOSYS.
+    """
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def replace(self, *_args, **_kwargs):
+        raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
+
+    def fsync(self, *_args, **_kwargs):
+        raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
+
+
+def test_groups_save_to_an_s3_backed_mount_and_stay_on_it(tmp_path, monkeypatch):
+    """The deployment as it actually is. This is the failure the operator saw:
+    ENOSYS (errno 38), Function not implemented, on every save.
+
+    The assertion that matters is the last one. The group has to be on the
+    volume, not merely accepted, because a group that only reaches memory does
+    not survive the restart the storage add-on was enabled to survive.
+    """
+    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    app = create_app(settings=settings, store=GroupStore(settings.groups_file),
+                     runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
+    with TestClient(app) as c:
+        storage = c.get("/healthz").json()["storage"]
+        assert storage["writable"] is True
+        assert storage["mode"] == "volume"
+        assert storage["strategy"] == "direct"
+
+        made = c.post("/api/groups", json={"name": "COSMOS Triplet",
+                                           "sats": [62902, 62903, 62904],
+                                           "reference": 62902})
+        assert made.status_code == 201, made.text
+        names = [g["name"] for g in c.get("/api/groups").json()["groups"]]
+        assert "COSMOS Triplet" in names
+
+    on_disk = json.loads((tmp_path / "groups.json").read_text(encoding="utf-8"))
+    assert "COSMOS Triplet" in [g["name"] for g in on_disk["groups"]]
+
+
+def test_an_s3_backed_mount_survives_a_restart(tmp_path, monkeypatch):
+    """A second app on the same volume reads back what the first one saved.
+    That is the whole reason the storage add-on is attached."""
+    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+
+    def build():
+        return create_app(settings=settings, store=GroupStore(settings.groups_file),
+                          runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
+
+    with TestClient(build()) as first:
+        first.post("/api/groups", json={"name": "Survivor", "sats": [1, 2],
+                                        "reference": 1})
+    with TestClient(build()) as second:
+        assert second.get("/healthz").json()["storage"]["mode"] == "volume"
+        names = [g["name"] for g in second.get("/api/groups").json()["groups"]]
+    assert "Survivor" in names
 
 
 def _unwritable_app(tmp_path, rendered=None):
@@ -787,6 +859,45 @@ def test_an_unwritable_volume_puts_a_standing_warning_on_the_page(tmp_path):
     assert "persistent storage add-on" in page
     assert "EROFS" in page
     assert "no storage volume is mounted" in page
+
+
+def test_a_non_atomic_mount_gets_a_note_on_the_page_not_a_warning(tmp_path,
+                                                                  monkeypatch):
+    """Saving works on such a mount, so this is a note about a residual risk,
+    not the memory warning.
+
+    Asserted at this level as well as in the browser because the note was
+    written once and never wired into the page. It rendered nowhere, and only
+    the browser test caught it. This makes the wiring itself a unit test.
+    """
+    monkeypatch.setattr("timeslides.groups.os", _NoPosixOS())
+    settings = Settings(udl_user="u", udl_pass="p", storage_path=tmp_path)
+    app = create_app(settings=settings, store=GroupStore(settings.groups_file),
+                     runner=JobRunner(lambda s, p: "<html/>", settings.runs_path))
+    with TestClient(app) as c:
+        page = c.get("/").text
+    # Match the markup, not the class name: the stylesheet is inlined into the
+    # page, so every class name appears in it whether or not anything uses it.
+    assert '<p class="note storagenote">' in page
+    assert "will survive a restart" in page
+    assert "could leave the file truncated" in page
+    assert '<div class="err storagewarn"' not in page
+
+
+def test_the_shell_says_nothing_about_storage_when_it_was_never_probed():
+    """The renderer is also used from the command line, where there is no
+    volume to probe and nothing to say about one."""
+    from timeslides.shell import render_shell
+
+    page = render_shell("OFFICIAL", demo=True, storage=None)
+    assert '<p class="note storagenote">' not in page
+    assert '<div class="err storagewarn"' not in page
+
+
+def test_an_atomic_mount_gets_neither_a_note_nor_a_warning(client):
+    page = client.get("/").text
+    assert '<p class="note storagenote">' not in page
+    assert '<div class="err storagewarn"' not in page
 
 
 def test_the_boot_probe_is_recorded_as_an_audit_event(tmp_path, capsys):

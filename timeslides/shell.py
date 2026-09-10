@@ -148,16 +148,38 @@ def _report_panel() -> str:
 </section>"""
 
 
+def _strategy_note(storage) -> str:
+    """A quiet line when the volume works but not crash-safely.
+
+    An S3-backed mount implements neither fsync nor rename, so the store writes
+    in place rather than replacing atomically. Saving works and groups survive
+    a restart, which is what matters; what is lost is the guarantee that a
+    crash part-way through a save cannot leave a truncated file. Worth one line
+    to whoever owns the groups, not an alarm.
+    """
+    if storage.get("strategy") in (None, "atomic"):
+        return ""
+    return ('<p class="note storagenote">Groups are saved and will survive a '
+            "restart. This volume does not support atomic replacement, so a "
+            "crash during a save could leave the file truncated: "
+            + esc(str(storage.get("detail", "")))
+            + "</p>")
+
+
 def _storage_banner(storage) -> str:
-    """A standing warning when the group store is running from memory.
+    """Whatever the page needs to say about storage, or nothing.
+
+    A standing warning when the group store is running from memory.
 
     The application still works in that state: groups can be built, saved,
     edited and rendered. What it cannot do is survive a restart. Saying so
     plainly beats both silence and the earlier behaviour, which was to refuse
     every save and read as a broken application.
     """
-    if not storage or storage.get("writable"):
+    if not storage:
         return ""
+    if storage.get("writable"):
+        return _strategy_note(storage)
     return ('<div class="err storagewarn" role="alert">'
             '<b>Groups are being kept in memory, not saved.</b> '
             "Everything here works, but any group you build will be lost when "

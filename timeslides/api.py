@@ -113,6 +113,12 @@ def create_app(settings: Settings = None, store=None, runner=None,
 def _check_storage(store) -> dict:
     """Probe the volume at boot, and fall back to memory if it cannot be used.
 
+    The probe runs the real write mechanism and reports which one this mount
+    supports, because the volume the app is actually given is S3-backed and
+    such mounts implement neither fsync nor rename. Reporting the strategy is
+    what makes the next storage problem diagnosable from /healthz instead of
+    from a guess.
+
     A missing or read-only volume used to make the application useless: seeding
     failed, every save returned an error, and the picker could not be used at
     all. It now keeps the group document in process instead, so the whole
@@ -126,9 +132,10 @@ def _check_storage(store) -> dict:
     ok, detail = store.writable()
     if not ok:
         store.use_memory_fallback(detail)
-    event("boot.storage", path=str(store.path), writable=ok,
-          mode="volume" if ok else "memory", detail=detail)
-    return {"writable": ok, "mode": "volume" if ok else "memory",
+    mode = "volume" if ok else "memory"
+    event("boot.storage", path=str(store.path), writable=ok, mode=mode,
+          strategy=store.strategy, detail=detail)
+    return {"writable": ok, "mode": mode, "strategy": store.strategy,
             "detail": detail, "path": str(store.path)}
 
 

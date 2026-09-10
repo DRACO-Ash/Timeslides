@@ -89,6 +89,10 @@ _WRITE_ADVICE = {
         "the atomic rename cannot complete. Something is mounted over part of "
         "this path."),
     errno.ENOENT: "the path does not exist and could not be created.",
+    errno.ENOSYS: (
+        "the filesystem does not implement that call. S3-backed FUSE mounts "
+        "typically implement neither fsync nor rename, so the store probes "
+        "what the mount supports and picks a write strategy to match."),
 }
 
 
@@ -103,6 +107,121 @@ def write_failure_advice(exc: OSError) -> str:
         detail += f": {exc.strerror}"
     advice = _WRITE_ADVICE.get(code)
     return f"{detail}. {advice}" if advice else detail
+
+
+# fsync is a durability guarantee, not part of the atomicity guarantee: the
+# temp-file-then-rename is what makes a replacement atomic. Several
+# filesystems, S3-backed FUSE mounts among them, do not implement fsync and
+# answer ENOSYS. Losing the flush on such a mount is a far better trade than
+# refusing to save at all, which is what a live deployment did.
+_FSYNC_UNSUPPORTED = frozenset(
+    code for code in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP,
+                      errno.ENOTSUP, errno.EBADF, errno.EPERM, errno.EACCES)
+    if code is not None)
+
+
+def _fsync_best_effort(fh) -> None:
+    try:
+        os.fsync(fh.fileno())
+    except OSError as exc:
+        if exc.errno not in _FSYNC_UNSUPPORTED:
+            raise
+        event("storage.fsync_unsupported",
+              code=errno.errorcode.get(exc.errno, exc.errno))
+
+
+def _ensure_parent(target: Path) -> None:
+    """Create the parent directory, but do not insist on being allowed to try.
+
+    On an object-store mount there are no real directories, and mkdir can fail
+    with ENOSYS even for a path that already exists. What matters is that the
+    parent is there afterwards, not that mkdir succeeded.
+    """
+    parent = target.parent
+    if parent.is_dir():
+        return
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        if not parent.is_dir():
+            raise
+
+
+def _write_atomic(target: Path, payload: str) -> None:
+    """Temp file beside the target, flush, fsync where implemented, rename.
+
+    The strategy to prefer: a reader either sees the whole old document or the
+    whole new one, never a half-written file.
+    """
+    _ensure_parent(target)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            _fsync_best_effort(fh)
+        os.replace(tmp, target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_direct(target: Path, payload: str) -> None:
+    """Straight over the top of the target. For mounts with no rename."""
+    _ensure_parent(target)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        _fsync_best_effort(fh)
+
+
+def _write_recreate(target: Path, payload: str) -> None:
+    """Remove the target, then create it fresh.
+
+    For object-store mounts that allow a new key to be written sequentially but
+    refuse to overwrite one that already exists.
+
+    The removal is the dangerous part, and the first version of this did it
+    without a way back: on a volume where the write then also failed, the
+    existing document was simply gone. So the old bytes are held and put back
+    if the write does not land.
+    """
+    _ensure_parent(target)
+    previous = None
+    with contextlib.suppress(OSError):
+        previous = target.read_bytes()
+    with contextlib.suppress(FileNotFoundError):
+        target.unlink()
+    try:
+        _write_direct(target, payload)
+    except OSError:
+        if previous is not None:
+            with contextlib.suppress(OSError):
+                target.write_bytes(previous)
+        raise
+
+
+# Tried in this order, best first. Only the first is crash-safe; the other two
+# exist because a mount that cannot rename would otherwise take the whole
+# application down, and a group that survives a restart but not a crash is
+# still far better than no persistence at all.
+WRITE_STRATEGIES = (
+    ("atomic", _write_atomic),
+    ("direct", _write_direct),
+    ("recreate", _write_recreate),
+)
+STRATEGY_NOTES = {
+    "atomic": "atomic replace (temp file and rename)",
+    "direct": ("written in place, because this mount does not support rename. "
+               "A crash part-way through a save could leave the file "
+               "truncated; the running pod is unaffected because it keeps the "
+               "document in memory too"),
+    "recreate": ("removed and rewritten, because this mount supports neither "
+                 "rename nor overwrite. A crash part-way through a save could "
+                 "lose the file; the running pod is unaffected because it "
+                 "keeps the document in memory too"),
+}
 
 
 def _now() -> str:
@@ -200,6 +319,13 @@ class GroupStore:
         # process instead of refusing every save. See use_memory_fallback.
         self._memory = None
         self._fallback_reason = None
+        # Which write mechanism this mount actually supports. Discovered by
+        # probing rather than assumed, because assuming POSIX made every save
+        # fail on an S3-backed volume.
+        self._strategy = None
+        # Kept even when the volume is working, so a strategy that is not
+        # crash-safe cannot cost the running pod its groups.
+        self._cache = None
 
     # --- degraded mode ----------------------------------------------------- #
     def use_memory_fallback(self, reason: str) -> None:
@@ -215,10 +341,29 @@ class GroupStore:
         because the groups really will be lost when the pod restarts.
         """
         with self._lock:
-            if self._memory is None:
-                self._memory = self._empty()
-            self._fallback_reason = reason
+            self._engage_fallback_locked(reason)
+
+    def _engage_fallback_locked(self, reason: str) -> None:
+        """The body of use_memory_fallback, for callers already holding the
+        lock. _write is one of them, so this must not take the lock itself."""
+        if self._memory is None:
+            self._memory = self._current_locked()
+        self._fallback_reason = reason
         event("storage.memory_fallback", path=str(self.path), reason=reason)
+
+    def _current_locked(self) -> dict:
+        """The best view of the document available without writing anything.
+
+        A read-only volume still holds the groups, and a mount that has just
+        refused a write has usually not lost what was already there, so
+        starting from empty would read as every group having been deleted.
+        """
+        if self._cache is not None:
+            return copy.deepcopy(self._cache)
+        try:
+            return self._read()
+        except (ValidationError, OSError):
+            return self._empty()
 
     @property
     def persistent(self) -> bool:
@@ -227,6 +372,11 @@ class GroupStore:
     @property
     def fallback_reason(self):
         return self._fallback_reason
+
+    @property
+    def strategy(self):
+        """Which write mechanism the probe settled on, once probed."""
+        return self._strategy
 
     # --- document level ---------------------------------------------------- #
     def _empty(self) -> dict:
@@ -250,33 +400,60 @@ class GroupStore:
         if not isinstance(doc, dict) or not isinstance(doc.get("groups"), list):
             raise ValidationError(f"the group store at {self.path} is not a group document")
         doc.setdefault("rev", 0)
+        self._cache = copy.deepcopy(doc)
         return doc
 
-    def _write(self, doc: dict) -> dict:
-        """Atomic replace: temp file in the same directory, fsync, rename.
+    def _persist(self, target: Path, payload: str) -> str:
+        """Write payload to target with the best mechanism the mount supports.
 
-        In memory-fallback mode the document is kept in process instead, so a
-        missing volume degrades persistence rather than breaking every write.
+        Returns the name of the strategy that worked and remembers it, so the
+        ladder is walked once rather than on every save. A strategy that stops
+        working later drops down the ladder again on its next failure.
+        """
+        strategies = list(WRITE_STRATEGIES)
+        if self._strategy is not None:
+            start = [i for i, (name, _) in enumerate(strategies)
+                     if name == self._strategy]
+            strategies = strategies[start[0]:] if start else strategies
+        last = None
+        for name, write in strategies:
+            try:
+                write(target, payload)
+            except OSError as exc:
+                last = exc
+                event("storage.strategy_failed", strategy=name,
+                      code=errno.errorcode.get(exc.errno, exc.errno))
+                continue
+            if name != self._strategy:
+                self._strategy = name
+                event("storage.strategy", strategy=name, path=str(target))
+            return name
+        raise last
+
+    def _write(self, doc: dict) -> dict:
+        """Persist the document, or keep it in memory if the mount refuses.
+
+        A storage fault never fails a save. The volume is not something the
+        person building a group can do anything about, and refusing the save
+        loses their work on top of the persistence. So the store walks down to
+        whatever the mount does support, and only if none of it works does it
+        degrade to memory and say so.
         """
         doc["rev"] = int(doc.get("rev", 0)) + 1
         if self._memory is not None:
             self._memory = copy.deepcopy(doc)
             return doc
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         payload = json.dumps(doc, indent=2, sort_keys=True)
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, self.path)
+            self._persist(self.path, payload)
         except OSError as exc:
-            with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
-            raise ValidationError(
-                f"could not write the group store at {self.path}: "
-                f"{write_failure_advice(exc)}") from exc
+            self._engage_fallback_locked(
+                f"a save failed: {write_failure_advice(exc)}")
+            self._memory = copy.deepcopy(doc)
+            return doc
+        # Held so a non-atomic strategy cannot cost the running pod its groups
+        # if a save is interrupted part-way through.
+        self._cache = copy.deepcopy(doc)
         return doc
 
     def _check_rev(self, doc: dict, expected) -> None:
@@ -289,18 +466,29 @@ class GroupStore:
                 "your change so you do not overwrite someone else's edit.")
 
     def writable(self) -> tuple:
-        """(ok, detail). Try a real write, because stat cannot tell you whether
-        a volume is read-only or whether fsGroup was applied."""
+        """(ok, detail). Run the real write mechanisms against a probe file and
+        settle on the best one this mount supports.
+
+        stat tells you almost nothing useful here: not whether the volume is
+        read-only, not whether fsGroup was applied, and not whether the
+        filesystem implements fsync or rename. The first version of this probe
+        wrote an empty file with write_text, which exercised none of the steps
+        a real save takes, so it reported an S3-backed mount writable while
+        every save on it failed. A probe that does not run the real path is
+        worse than no probe: it manufactures confidence.
+
+        Probing twice, once here and once on the first real save, is the price
+        of knowing at boot. It is one small file.
+        """
         probe = self.path.with_name(f".writetest.{os.getpid()}")
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            probe.write_text("", encoding="utf-8")
+            strategy = self._persist(probe, '{"probe": true}')
         except OSError as exc:
             return False, write_failure_advice(exc)
         finally:
             with contextlib.suppress(OSError):
                 probe.unlink(missing_ok=True)
-        return True, "writable"
+        return True, f"writable, {STRATEGY_NOTES[strategy]}"
 
     # --- reads ------------------------------------------------------------- #
     def load(self, include_archived: bool = False) -> dict:

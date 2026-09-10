@@ -3,6 +3,7 @@ revision check that stops one person's save discarding another's."""
 
 from __future__ import annotations
 
+import builtins
 import errno
 import json
 import os
@@ -24,6 +25,22 @@ def store(tmp_path):
 def _refuse_replace(*_args, **_kwargs):
     """Injected in place of os.replace, so the atomic rename fails."""
     raise OSError("no")
+
+
+def _refusing(code):
+    """A stand-in for a syscall the filesystem does not implement."""
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(code, os.strerror(code))
+
+    return refuse
+
+
+def _block_all_writes(monkeypatch, code=errno.EROFS):
+    """Make every write mechanism in the ladder fail, the way a volume that is
+    genuinely unusable does."""
+    monkeypatch.setattr(os, "replace", _refusing(code))
+    monkeypatch.setattr(builtins, "open", _refusing(code))
 
 
 def _group(**over):
@@ -353,7 +370,7 @@ def test_a_json_document_of_the_wrong_shape_is_rejected(tmp_path):
 
 def test_a_write_failure_explains_the_fsgroup_trap(tmp_path, monkeypatch):
     """The classic degraded pod: healthy app, root-owned volume, EACCES on
-    every save. The message needs to name the cause.
+    every save. The reported reason needs to name the cause.
 
     The failure is injected rather than produced with chmod, because the test
     suite may run as root (it does in the build container) and root ignores
@@ -361,37 +378,151 @@ def test_a_write_failure_explains_the_fsgroup_trap(tmp_path, monkeypatch):
     wrong reason.
     """
     store = GroupStore(tmp_path / "groups.json")
+    _block_all_writes(monkeypatch, errno.EACCES)
+    store.create(_group())
+    assert "fsGroup" in store.fallback_reason
 
-    def denied(*_a, **_k):
-        raise PermissionError(13, "Permission denied")
 
-    payload = _group()
-    monkeypatch.setattr(os, "replace", denied)
-    with pytest.raises(ValidationError, match="fsGroup"):
-        store.create(payload)
+def test_a_rename_failure_falls_through_to_writing_in_place(tmp_path, monkeypatch):
+    """An S3-backed mount is what the app is actually given, and those
+    typically implement neither fsync nor rename.
+
+    Refusing the save was the old behaviour and it made the deployed
+    application useless. The store drops to the next mechanism instead, and the
+    group is both saved and on the volume.
+    """
+    store = GroupStore(tmp_path / "groups.json")
+    monkeypatch.setattr(os, "replace", _refusing(errno.ENOSYS))
+    monkeypatch.setattr(os, "fsync", _refusing(errno.ENOSYS))
+    made = store.create(_group())
+    assert store.strategy == "direct"
+    assert store.persistent, "this must stay on the volume, not go to memory"
+    assert [g["id"] for g in store.active()] == [made["id"]]
+    on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+    assert [g["id"] for g in on_disk["groups"]] == [made["id"]]
+
+
+def test_a_mount_that_refuses_to_overwrite_is_rewritten_from_scratch(tmp_path,
+                                                                     monkeypatch):
+    """Some object-store mounts take a new key written sequentially but refuse
+    to open an existing one for writing."""
+    store = GroupStore(tmp_path / "groups.json")
+    store.path.write_text('{"rev": 0, "groups": []}', encoding="utf-8")
+    monkeypatch.setattr(os, "replace", _refusing(errno.ENOSYS))
+    real_open = builtins.open
+
+    def refuse_existing(file, mode="r", *args, **kwargs):
+        if "w" in mode and pathlib.Path(file).exists():
+            raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", refuse_existing)
+    made = store.create(_group())
+    assert store.strategy == "recreate"
+    assert store.persistent
+    monkeypatch.undo()
+    on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+    assert [g["id"] for g in on_disk["groups"]] == [made["id"]]
+
+
+def test_an_unimplemented_fsync_does_not_fail_a_save(tmp_path, monkeypatch):
+    """fsync is durability, not atomicity. The temp-and-rename is what makes
+    the replacement atomic, so a mount without fsync keeps the good strategy."""
+    store = GroupStore(tmp_path / "groups.json")
+    monkeypatch.setattr(os, "fsync", _refusing(errno.ENOSYS))
+    made = store.create(_group())
+    assert store.strategy == "atomic"
+    assert [g["id"] for g in store.active()] == [made["id"]]
+
+
+def test_a_real_fsync_error_is_not_swallowed(tmp_path, monkeypatch):
+    """ENOSYS means the call does not exist. EIO means the write itself failed,
+    and that must not be waved through as a filesystem quirk.
+
+    Only fsync is broken here, so every rung of the ladder reaches it and every
+    rung fails. The store degrades to memory rather than reporting a save that
+    never landed.
+    """
+    store = GroupStore(tmp_path / "groups.json")
+    monkeypatch.setattr(os, "fsync", _refusing(errno.EIO))
+    store.create(_group())
+    assert not store.persistent
+    assert "EIO" in store.fallback_reason
+
+
+def test_a_parent_that_cannot_be_created_is_reported(tmp_path, monkeypatch):
+    """No directory, and mkdir refused: there is nowhere to write."""
+    store = GroupStore(tmp_path / "nested" / "groups.json")
+    monkeypatch.setattr(pathlib.Path, "mkdir", _refusing(errno.EROFS))
+    ok, detail = store.writable()
+    assert ok is False
+    assert "EROFS" in detail
+
+
+def test_a_refused_mkdir_is_ignored_when_the_parent_is_already_there(tmp_path,
+                                                                    monkeypatch):
+    """On an object-store mount there are no real directories, and mkdir can
+    fail even for a path that exists. What matters is that the parent is there,
+    not that mkdir was allowed to run."""
+    store = GroupStore(tmp_path / "groups.json")
+    calls = []
+
+    def refuse(self, *_a, **_k):
+        calls.append(self)
+        raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", lambda self: False)
+    monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
+    ok, _detail = store.writable()
+    assert calls, "mkdir should have been attempted"
+    assert ok is False, "with is_dir false throughout, there is nowhere to write"
+
+
+def test_a_corrupt_document_does_not_stop_the_fallback(tmp_path):
+    """Falling back seeds from the volume where it can be read. An unreadable
+    file must not turn the fallback itself into an error."""
+    path = tmp_path / "groups.json"
+    path.write_text("{ not json", encoding="utf-8")
+    store = GroupStore(path)
+    store.use_memory_fallback("test")
+    assert store.load() == {"rev": 0, "groups": []}
+    made = store.create(_group())
+    assert [g["id"] for g in store.active()] == [made["id"]]
+    assert path.read_text(encoding="utf-8") == "{ not json", \
+        "the unreadable file is evidence; it must not be overwritten"
 
 
 def test_a_failed_write_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
     store = GroupStore(tmp_path / "groups.json")
-    payload = _group()
     monkeypatch.setattr(os, "replace", _refuse_replace)
-    with pytest.raises(ValidationError):
-        store.create(payload)
-    assert list(tmp_path.iterdir()) == []
+    store.create(_group())
+    monkeypatch.undo()
+    leftovers = [f.name for f in tmp_path.iterdir() if ".tmp" in f.name]
+    assert leftovers == []
 
 
-def test_a_failed_write_does_not_damage_an_existing_document(tmp_path, monkeypatch):
-    """The whole point of writing to a temporary file and renaming."""
+def test_a_volume_that_stops_working_does_not_damage_what_is_on_it(tmp_path,
+                                                                   monkeypatch):
+    """A save that cannot reach the volume must leave the volume as it was, and
+    must still keep the group for the life of the pod.
+
+    This is the regression test for a real data-loss bug in the write ladder.
+    The recreate strategy removes the target before rewriting it, and its first
+    version did so with no way back, so on a volume where the write then also
+    failed the existing document was simply gone. It now holds the old bytes
+    and puts them back.
+    """
     store = GroupStore(tmp_path / "groups.json")
     first = store.create(_group())
     before = store.path.read_text(encoding="utf-8")
-    second = _group(name="SECOND", sats=[1, 2], reference=1)
-    monkeypatch.setattr(os, "replace", _refuse_replace)
-    with pytest.raises(ValidationError):
-        store.create(second)
+    _block_all_writes(monkeypatch)
+    second = store.create(_group(name="SECOND", sats=[1, 2], reference=1))
     monkeypatch.undo()
     assert store.path.read_text(encoding="utf-8") == before
-    assert [g["id"] for g in store.active()] == [first["id"]]
+    assert not store.persistent
+    # Both groups are still there: the one on the volume and the one that only
+    # ever made it to memory.
+    assert [g["id"] for g in store.active()] == [first["id"], second["id"]]
 
 
 def test_the_store_creates_its_parent_directory(tmp_path):
@@ -476,16 +607,13 @@ def test_an_unrecognised_errno_still_reports_what_the_os_said():
     assert "errno 9999" in advice
 
 
-def test_the_store_reports_the_real_errno_when_a_write_fails(tmp_path, monkeypatch):
+def test_the_store_reports_the_real_errno_when_every_write_fails(tmp_path,
+                                                                 monkeypatch):
     store = GroupStore(tmp_path / "groups.json")
-    payload = _group()
-
-    def read_only(*_args, **_kwargs):
-        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
-
-    monkeypatch.setattr(os, "replace", read_only)
-    with pytest.raises(ValidationError, match="EROFS"):
-        store.create(payload)
+    _block_all_writes(monkeypatch, errno.EROFS)
+    store.create(_group())
+    assert "EROFS" in store.fallback_reason
+    assert "storage add-on" in store.fallback_reason
 
 
 # --------------------------------------------------------------------------- #
@@ -495,20 +623,37 @@ def test_a_writable_volume_probes_clean_and_leaves_nothing_behind(tmp_path):
     store = GroupStore(tmp_path / "nested" / "groups.json")
     ok, detail = store.writable()
     assert ok is True
-    assert detail == "writable"
+    assert detail == "writable, atomic replace (temp file and rename)"
+    assert store.strategy == "atomic"
     assert list((tmp_path / "nested").iterdir()) == [], "the probe file must be removed"
+
+
+def test_the_probe_runs_the_same_mechanism_a_real_save_runs(tmp_path, monkeypatch):
+    """The defect this exists to prevent.
+
+    The first probe wrote an empty file with write_text. That took none of the
+    steps a save takes, so on an S3-backed mount it reported the volume
+    writable while every save on it failed on the fsync. The probe must fail
+    wherever a save would fail, and must settle on the mechanism a save will
+    then use.
+    """
+    store = GroupStore(tmp_path / "groups.json")
+    monkeypatch.setattr(os, "replace", _refusing(errno.ENOSYS))
+    monkeypatch.setattr(os, "fsync", _refusing(errno.ENOSYS))
+    ok, detail = store.writable()
+    assert ok is True
+    assert store.strategy == "direct"
+    assert "does not support rename" in detail
+    assert "truncated" in detail, "the loss of atomicity has to be stated"
+    # And the save that follows uses what the probe settled on.
+    store.create(_group())
+    assert store.strategy == "direct"
+    assert store.persistent
 
 
 def test_an_unwritable_volume_probes_dirty_with_the_reason(tmp_path, monkeypatch):
     store = GroupStore(tmp_path / "groups.json")
-    real_write = pathlib.Path.write_text
-
-    def refuse(self, *args, **kwargs):
-        if self.name.startswith(".writetest"):
-            raise OSError(errno.EROFS, os.strerror(errno.EROFS))
-        return real_write(self, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "write_text", refuse)
+    _block_all_writes(monkeypatch, errno.EROFS)
     ok, detail = store.writable()
     assert ok is False
     assert "EROFS" in detail
