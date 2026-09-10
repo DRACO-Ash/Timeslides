@@ -222,3 +222,43 @@ def test_the_dockerfile_does_not_set_the_port():
     assert "PORT" not in directives.replace("--port", ""), \
         "PORT must be read with a default, never set in the image"
     assert "USER 1000:1000" in directives
+
+
+# --------------------------------------------------------------------------- #
+#  The storage path is the one variable the app builds filesystem paths from
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("raw,want", [
+    ("/data", "/data"),
+    ("/data/", "/data"),
+    ("  /data  ", "/data"),
+    ("/mnt/store", "/mnt/store"),
+    ("/var/lib/app_store-1.0", "/var/lib/app_store-1.0"),
+    ("/data/./groups", "/data/groups"),
+    (None, "/data"),
+    ("", "/data"),
+])
+def test_a_sane_storage_path_is_accepted_and_tidied(raw, want):
+    assert str(load_settings({"TIMESLIDES_DEMO": "1",
+                              "STORAGE_MOUNT_PATH": raw} if raw is not None
+                             else {"TIMESLIDES_DEMO": "1"}).storage_path) == want
+
+
+@pytest.mark.parametrize("raw", [
+    "relative/path",
+    "/data/../etc",
+    "..",
+    "//data",
+    "/data\x00/x",
+    "/data/$(whoami)",
+    "/data/x;rm -rf /",
+])
+def test_a_storage_path_that_is_not_a_plain_absolute_path_fails_closed(raw):
+    """Validated at the boundary rather than trusted down to the writes.
+
+    This is the one environment variable the application then builds filesystem
+    paths from, and the scanner was right to say so. A traversal segment is
+    reported rather than normalised away, because a STORAGE_MOUNT_PATH
+    containing one is a misconfiguration, not something to reinterpret.
+    """
+    with pytest.raises(ConfigError, match="STORAGE_MOUNT_PATH"):
+        load_settings({"TIMESLIDES_DEMO": "1", "STORAGE_MOUNT_PATH": raw})

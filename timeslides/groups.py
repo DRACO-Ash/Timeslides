@@ -182,24 +182,31 @@ def _write_recreate(target: Path, payload: str) -> None:
     For object-store mounts that allow a new key to be written sequentially but
     refuse to overwrite one that already exists.
 
-    The removal is the dangerous part, and the first version of this did it
-    without a way back: on a volume where the write then also failed, the
-    existing document was simply gone. So the old bytes are held and put back
-    if the write does not land.
+    The removal is the dangerous part. Two earlier versions got it wrong: the
+    first unlinked with no way back, so on a volume where the write then also
+    failed the document was simply gone; the second restored it afterwards,
+    which only worked because the restore used a different call than the write.
+
+    So nothing is removed until the mount has proved it will take a write. A
+    sibling file is written first, and if that fails the target is never
+    touched. Only then is the target replaced, and the sibling is kept until it
+    has been, so there is something to put back.
     """
     _ensure_parent(target)
-    previous = None
-    with contextlib.suppress(OSError):
-        previous = target.read_bytes()
-    with contextlib.suppress(FileNotFoundError):
-        target.unlink()
+    spare = target.with_name(f".{target.name}.{os.getpid()}.spare")
     try:
-        _write_direct(target, payload)
+        _write_direct(spare, payload)
     except OSError:
-        if previous is not None:
-            with contextlib.suppress(OSError):
-                target.write_bytes(previous)
+        with contextlib.suppress(OSError):
+            spare.unlink(missing_ok=True)
         raise
+    try:
+        with contextlib.suppress(FileNotFoundError):
+            target.unlink()
+        _write_direct(target, payload)
+    finally:
+        with contextlib.suppress(OSError):
+            spare.unlink(missing_ok=True)
 
 
 # Tried in this order, best first. Only the first is crash-safe; the other two

@@ -18,6 +18,7 @@ failing every request.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,6 +40,29 @@ DEFAULT_STORAGE = "/data"
 # is configuration rather than a hardcoded decision, and so a local run can
 # narrow it to 127.0.0.1 if you want that.
 DEFAULT_HOST = ""
+
+
+# The storage path is the one environment variable the application then builds
+# filesystem paths from, so it is validated at the boundary rather than trusted
+# all the way down to the writes. It has to be an absolute, fully normalised
+# path with no traversal segment: that is what the platform injects
+# (STORAGE_MOUNT_PATH=/data), and anything else is a misconfiguration worth
+# failing closed on.
+_SAFE_PATH = re.compile(r"^/(?:[A-Za-z0-9._][A-Za-z0-9._-]*/?)*$")
+
+
+def _storage_path(raw) -> Path:
+    candidate = (raw or DEFAULT_STORAGE).strip() or DEFAULT_STORAGE
+    if not _SAFE_PATH.match(candidate) or ".." in Path(candidate).parts:
+        raise ConfigError(
+            f"STORAGE_MOUNT_PATH must be an absolute path with no traversal "
+            f"segment, got {candidate!r}")
+    # Path() collapses the remaining harmless noise: a trailing slash, a "."
+    # segment, a repeated separator. ".." is the only segment that could climb
+    # out, and it is refused above rather than normalised away, because a
+    # STORAGE_MOUNT_PATH containing one is a misconfiguration to report, not
+    # something to quietly reinterpret.
+    return Path(candidate)
 
 
 def _flag(env, name: str, default: bool = False) -> bool:
@@ -113,7 +137,7 @@ def load_settings(env=None) -> Settings:
         udl_pass=env.get("UDL_PASS") or "",
         host=env.get("HOST", DEFAULT_HOST).strip(),
         port=_int(env, "PORT", DEFAULT_PORT, 1, 65535),
-        storage_path=Path(env.get("STORAGE_MOUNT_PATH") or DEFAULT_STORAGE),
+        storage_path=_storage_path(env.get("STORAGE_MOUNT_PATH")),
         classification=(env.get("CLASSIFICATION") or "UNCLASSIFIED").strip(),
         demo=_flag(env, "TIMESLIDES_DEMO"),
         udl_rate_per_min=_int(env, "UDL_RATE_PER_MIN", 60, 1, 600),

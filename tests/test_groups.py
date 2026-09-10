@@ -425,6 +425,36 @@ def test_a_mount_that_refuses_to_overwrite_is_rewritten_from_scratch(tmp_path,
     assert [g["id"] for g in on_disk["groups"]] == [made["id"]]
 
 
+def test_recreate_does_not_remove_the_target_until_a_write_has_succeeded(
+        tmp_path, monkeypatch):
+    """The rung that replaces the file must not be the reason the file is gone.
+
+    Asserted directly against the strategy, because through the ladder the
+    earlier rungs mask it: this is the guarantee the rung itself has to make.
+    """
+    from timeslides.groups import _write_recreate
+
+    target = tmp_path / "groups.json"
+    target.write_text('{"rev": 1, "groups": []}', encoding="utf-8")
+    before = target.read_text(encoding="utf-8")
+    monkeypatch.setattr(builtins, "open", _refusing(errno.EROFS))
+    with pytest.raises(OSError):
+        _write_recreate(target, '{"rev": 2, "groups": []}')
+    monkeypatch.undo()
+    assert target.read_text(encoding="utf-8") == before
+
+
+def test_recreate_leaves_nothing_beside_the_target(tmp_path):
+    from timeslides.groups import _write_recreate
+
+    target = tmp_path / "groups.json"
+    _write_recreate(target, '{"rev": 1, "groups": []}')
+    assert [f.name for f in tmp_path.iterdir()] == ["groups.json"]
+    _write_recreate(target, '{"rev": 2, "groups": []}')
+    assert [f.name for f in tmp_path.iterdir()] == ["groups.json"]
+    assert json.loads(target.read_text(encoding="utf-8"))["rev"] == 2
+
+
 def test_an_unimplemented_fsync_does_not_fail_a_save(tmp_path, monkeypatch):
     """fsync is durability, not atomicity. The temp-and-rename is what makes
     the replacement atomic, so a mount without fsync keeps the good strategy."""
@@ -509,8 +539,8 @@ def test_a_volume_that_stops_working_does_not_damage_what_is_on_it(tmp_path,
     This is the regression test for a real data-loss bug in the write ladder.
     The recreate strategy removes the target before rewriting it, and its first
     version did so with no way back, so on a volume where the write then also
-    failed the existing document was simply gone. It now holds the old bytes
-    and puts them back.
+    failed the existing document was simply gone. Nothing is removed now until
+    the mount has proved it will take a write.
     """
     store = GroupStore(tmp_path / "groups.json")
     first = store.create(_group())
