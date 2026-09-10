@@ -39,8 +39,10 @@ from pathlib import Path
 import numpy as np
 
 from ..errors import ComputeError
-from ..models import ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL
+from ..models import (ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL,
+                      UNATTRIBUTED)
 from ..physics import compute_series, propagate, reference_satrec
+from ..quality import summarise
 from ..storage import VolumeWriter
 
 ASSETS = Path(__file__).parent / "assets"
@@ -87,8 +89,8 @@ def _series_stats(series):
     """current offset, drift rate (s/day) via linear fit, and count."""
     if not series:
         return None
-    ts = [e for e, _ in series]
-    ys = [o for _, o in series]
+    ts = [point[0] for point in series]
+    ys = [point[1] for point in series]
     if len(ys) > 1:
         t0 = ts[0]
         xs = np.array([(t - t0).total_seconds() for t in ts])
@@ -113,13 +115,43 @@ def _sat_colours(sat_order, ref_no):
 # --------------------------------------------------------------------------- #
 #  Datasets
 # --------------------------------------------------------------------------- #
+def _source_line(key: str) -> str:
+    """The provenance fragment of a point's tooltip.
+
+    Only the element-set series gets one. Its query is not filtered by
+    provider, so who produced a given point is a property of that point; the
+    state-vector series are queried per provider, and repeating the provider
+    name that is already on the line above would be noise.
+    """
+    # A literal middot, not the HTML entity. Plotly's hovertemplate decodes
+    # only the basic entities (&amp;, &lt;, &gt;) and leaves named ones alone,
+    # so "&middot;" appeared on screen verbatim. Verified by hovering a real
+    # point in a browser, which is the only thing that shows it.
+    #
+    # The escaping of the values interpolated into this template is still
+    # correct, and safe: Plotly parses its pseudo-HTML tags BEFORE decoding
+    # entities, so an escaped "&lt;script&gt;" is displayed as inert text
+    # rather than becoming a tag. Also verified rather than assumed.
+    return " \u00b7 %{customdata}" if key == ELSET_KEY else ""
+
+
 def _object_traces(sat_no, name, present, series):
-    """The per-source trace arrays and the summary card for one object."""
-    xs, ys, counts, headline = [], [], {}, None
+    """The per-source trace arrays, per-point provenance, and the summary card.
+
+    `srcs` is the originator of each individual point, which the plot shows in
+    the tooltip. It matters most for the element-set series, whose query is not
+    filtered by provider, so the series label alone does not say who produced
+    any given point.
+    """
+    xs, ys, srcs, counts, headline = [], [], [], {}, None
     for key in present:
         ser = series.get(key, [])
-        xs.append([o for _, o in ser])
-        ys.append([e.isoformat() for e, _ in ser])
+        xs.append([point[1] for point in ser])
+        ys.append([point[0].isoformat() for point in ser])
+        # Escaped here, at the point it enters the dataset. These strings come
+        # from a UDL tenant and end up in a Plotly hovertemplate, which renders
+        # as HTML, so this is a reflection site like any other.
+        srcs.append([esc(point[2] or UNATTRIBUTED) for point in ser])
         counts[key] = len(ser)
         if headline is None and ser:
             headline = _series_stats(ser)
@@ -131,7 +163,7 @@ def _object_traces(sat_no, name, present, series):
         "drift": primary["drift"],
         "counts": counts,
         "absent": all(v == 0 for v in counts.values())}
-    return xs, ys, card
+    return xs, ys, srcs, card
 
 
 def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, invert, window):
@@ -140,14 +172,15 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
     Missing data yields empty arrays so trace indices stay stable for restyle."""
     ref_sat = reference_satrec(list(objects_by_sat.values()), ref_no, ref_epoch)
     colour = _sat_colours(sat_order, ref_no)
-    xs, ys, colours, cards = [], [], [], []
+    xs, ys, srcs, colours, cards = [], [], [], [], []
     for s in sat_order:
         obj = objects_by_sat.get(s)
         nm = names.get(s, f"OBJECT {s}")
         series = compute_series(obj, ref_sat, invert) if obj else {}
-        obj_xs, obj_ys, card = _object_traces(s, nm, present, series)
+        obj_xs, obj_ys, obj_srcs, card = _object_traces(s, nm, present, series)
         xs.extend(obj_xs)
         ys.extend(obj_ys)
+        srcs.extend(obj_srcs)
         colours.extend([colour[s]] * len(present))
         card.update(colour=colour[s], is_ref=(s == ref_no))
         cards.append(card)
@@ -155,6 +188,7 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
     return {
         "x": xs,
         "y": ys,
+        "srcs": srcs,
         "colours": colours,
         "cards": cards,
         "vkms": round(float(np.linalg.norm(v0)), 3)}
@@ -232,11 +266,16 @@ def _figure(sat_order, present, names, ds, div_id, first):
             idx = k * npresent + j
             colr = ds["colours"][idx]
             # Plotly renders hovertemplate as HTML, so the object name is
-            # escaped here as well as at the markup sites.
+            # escaped here as well as at the markup sites. The per-point source
+            # comes through customdata and is escaped when the dataset is
+            # built, because it is a string from a UDL tenant.
             fig.add_trace(go.Scatter(
                 x=ds["x"][idx], y=ds["y"][idx], mode="markers",
+                customdata=ds["srcs"][idx],
                 name=f"{s} {key}", marker=_marker(key, colr),
-                hovertemplate=(f"<b>{esc(nm)}</b> · {s}<br>{esc(SRC_LABEL.get(key, key))}<br>"
+                hovertemplate=(f"<b>{esc(nm)}</b> · {s}<br>"
+                               f"{esc(SRC_LABEL.get(key, key))}"
+                               f"{_source_line(key)}<br>"
                                "%{y|%d %b %H:%M}Z<br>offset %{x:.1f} s<extra></extra>")))
             traces.append({"obj": s, "source": key})
     fig.update_layout(**_layout())
@@ -329,6 +368,7 @@ def build_panel(panel_id, name, sat_order, names, objects_by_mode, mode_order,
         "id": panel_id,
         "name": name,
         "div_id": div_id,
+        "quality": _quality_findings(objects_by_mode),
         "plot_div": plot_div,
         "traces": traces,
         "present": present,
@@ -362,6 +402,69 @@ def _source_chips(p) -> str:
         f'<button class="srcchip active" data-src="{esc(m["key"])}">'
         f'<span class="mk {esc(m["shape"])}"></span>{esc(m["label"])}</button>'
         for m in p["presentMeta"])
+
+
+def _quality_findings(objects_by_mode) -> dict:
+    """Gather the ingestion findings for one panel's objects.
+
+    Read off the objects rather than passed in, because that is where the
+    fetcher put them and an extra argument is an extra thing to forget.
+    """
+    findings = []
+    for by_sat in objects_by_mode.values():
+        for obj in by_sat.values():
+            if obj is not None:
+                findings.extend(obj.findings)
+    return summarise(findings)
+
+
+def _conflict_line(finding: dict) -> str:
+    """One source's same-epoch disagreement, in the terms an analyst needs.
+
+    Which epochs, how the winner was chosen, and whether that choice meant
+    anything. A conflict resolved arbitrarily is a different statement from one
+    resolved by creation time, and reading the chart depends on knowing which.
+    """
+    conflicts = finding["conflicts"]
+    epochs = ", ".join(esc(c["epoch"]) for c in conflicts[:3])
+    if len(conflicts) > 3:
+        epochs += f" and {len(conflicts) - 3} more"
+    arbitrary = sum(1 for c in conflicts if c["arbitrary"])
+    # Covers both undecidable cases: no creation stamp at all, and two stamps
+    # that are identical. Naming only the first would be wrong for the second.
+    how = ("resolved by the feed's creation stamp" if arbitrary == 0
+           else "nothing in the feed distinguishes them, so the one plotted is "
+                "whichever arrived first")
+    return (f'<li><b>{esc(finding["source"])}</b> sent {len(conflicts)} '
+            f"disagreeing report{'s' if len(conflicts) != 1 else ''} at the "
+            f"same epoch ({epochs}). One of each pair is plotted and the other "
+            f"is not: {how}.</li>")
+
+
+def _quality_band(q: dict) -> str:
+    """The data-quality band, shown only when there is something to say.
+
+    Duplication is invisible on the chart by nature: two reports at one epoch
+    overplot, so the picture looks identical whether a source sent one or five.
+    A conflict is worse, because which record is plotted changes the reading.
+    Neither belongs only in the pod log.
+    """
+    if not q["findings"]:
+        return ""
+    conflicting = [f for f in q["findings"] if f["conflicts"]]
+    kind = "dq-alert" if conflicting else "dq-note"
+    head = ("Same-epoch disagreement" if conflicting
+            else "Duplicate reports collapsed")
+    body = "".join(_conflict_line(f) for f in conflicting)
+    if q["duplicates"]:
+        sources = ", ".join(esc(f["source"]) for f in q["findings"]
+                            if f["duplicates"])
+        body += (f"<li>{q['duplicates']} identical report"
+                 f"{'s' if q['duplicates'] != 1 else ''} arrived more than "
+                 f"once ({sources}) and were collapsed. The chart is "
+                 f"unaffected; the count says something about the feed.</li>")
+    return (f'<div><h2>Data quality</h2><div class="dq {kind}" role="alert">'
+            f"<b>{head}.</b><ul>{body}</ul></div></div>")
 
 
 def _panel_hint(p) -> str:
@@ -407,6 +510,7 @@ def _panel_section(p, active) -> str:
           {_source_chips(p)}
         </div>
       </div>
+      {_quality_band(p["quality"])}
       <div>
         <h2>Objects &mdash; tap to isolate</h2>
         <div class="cards" id="cards-{p['id']}"></div>

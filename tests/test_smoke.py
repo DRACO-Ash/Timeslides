@@ -961,3 +961,89 @@ def test_the_report_can_be_rendered_twice_in_a_row(page, live_server):
         page.frame_locator("#repframe").locator(".js-plotly-plot").first.wait_for(
             timeout=60_000)
     _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  Per-point provenance, in the browser
+#
+#  The element-set series is the one that is always plotted and cannot be
+#  deselected, and until now it was also the one with no attribution. Its query
+#  is not filtered by provider, so who produced a given point is a property of
+#  that point and the series label cannot say it.
+# --------------------------------------------------------------------------- #
+def _hover_first_point(page, frame, selector):
+    """Hover a plotted marker and return the tooltip text.
+
+    text_content, not inner_text: Plotly draws its tooltip as an SVG group, and
+    inner_text is defined on HTMLElement only.
+    """
+    box = frame.locator(selector).first.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    frame.locator(".hovertext").first.wait_for(timeout=10_000)
+    return frame.locator(".hovertext").first.text_content()
+
+
+def test_hovering_an_element_set_point_names_its_source(page, live_server):
+    """The question this feature exists to answer: which source is this point
+    from. Asserted by actually hovering, because a customdata array present in
+    the document proves nothing about what a user sees."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
+
+    # Isolate the element-set series so the point under the cursor is one.
+    for chip in ("leolabs", "northstar", "kbr", "ppec", "spacetrack"):
+        frame.locator(f'.srcchip[data-src="{chip}"]').first.click()
+    page.wait_for_timeout(400)
+
+    tip = _hover_first_point(page, frame, ".js-plotly-plot .points path")
+    assert "Element sets" in tip, tip
+    assert ("18 SDS" in tip or "Space-Track" in tip), \
+        f"the element set's own source is missing from the tooltip: {tip}"
+    # Plotly draws the tooltip as SVG text and does not decode HTML entities
+    # there, so an entity separator showed up on screen verbatim. Hovering a
+    # real point is the only thing that catches that.
+    assert "&middot;" not in tip, tip
+    assert "&amp;" not in tip, tip
+    _assert_clean(page)
+
+
+def test_the_element_set_series_carries_more_than_one_source(page, live_server):
+    """A single-source series would make the per-point label pointless. The
+    feed is not filtered by provider, so it genuinely varies."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
+    sources = frame.locator(".js-plotly-plot").first.evaluate(
+        """el => {
+             const t = el.data.find(d => (d.hovertemplate || "")
+                                          .includes("Element sets"));
+             return t ? [...new Set(t.customdata)] : [];
+           }""")
+    assert len(sources) >= 2, sources
+    _assert_clean(page)
+
+
+def test_a_state_provider_point_names_its_provider_once(page, live_server):
+    """Its series is queried per provider, so the label above already says it
+    and the tooltip must not say it twice."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    frame.locator(".js-plotly-plot").first.wait_for(timeout=60_000)
+    for chip in ("northstar", "kbr", "ppec", "spacetrack", "elset"):
+        chip_el = frame.locator(f'.srcchip[data-src="{chip}"]')
+        if chip_el.count():
+            chip_el.first.click()
+    page.wait_for_timeout(400)
+    tip = _hover_first_point(page, frame, ".js-plotly-plot .points path")
+    assert tip.count("LeoLabs") == 1, tip
+    _assert_clean(page)

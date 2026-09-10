@@ -16,7 +16,8 @@ import numpy as np
 from sgp4.api import WGS72, Satrec, jday
 from sgp4.exporter import export_tle
 
-from .models import STATE_SOURCE_KEYS, Elset, ObjectData, StateVector
+from .models import (SRC_LABEL, STATE_SOURCE_KEYS, Elset, ObjectData,
+                     StateVector)
 
 from .physics import propagate
 # The synthetic objects, named once. The same three appear in the REAL and SIM
@@ -72,7 +73,9 @@ def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=Non
             t = start + dt.timedelta(seconds=window_s * i / (n - 1))
             r, v = propagate(sat, t)
             r = r + rng.normal(0, noise.get(key, 0.08), 3)
-            svs.append(StateVector(epoch=t, r=r, v=v, frame="TEME"))
+            svs.append(StateVector(epoch=t, r=r, v=v, frame="TEME",
+                                   source=SRC_LABEL.get(key, key),
+                                   created=t.strftime("%Y-%m-%dT%H:%M:%SZ")))
         obj.state_series[key] = svs
 
     n_rad_min = n_rev_day * 2 * math.pi / 1440.0
@@ -84,8 +87,22 @@ def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=Non
         s = _make_satrec(t, n_rev_day, 0.0008, 53.0, 120.0, 30.0,
                          ma_t + rng.normal(0, 0.002), sat_no)
         l1, l2 = _tle_lines(s)
-        obj.elsets.append(Elset(epoch=t, line1=l1, line2=l2))
+        # Two originators, alternating, because that is what the real feed
+        # looks like: /udl/elset is not filtered by source, so a tenant holding
+        # element sets from more than one producer returns them all in one
+        # series. Demo mode showing a single source would misrepresent the one
+        # series whose provenance varies per point.
+        obj.elsets.append(Elset(epoch=t, line1=l1, line2=l2,
+                                source=ELSET_ORIGINATORS[i % len(ELSET_ORIGINATORS)],
+                                created=t.strftime("%Y-%m-%dT%H:%M:%SZ")))
     return obj
+
+
+# The originators demo element sets are attributed to. 18 SDS produces the
+# general perturbations catalogue that Space-Track distributes, so a tenant
+# commonly holds both labels for the same lineage; showing two makes the
+# per-point provenance in the tooltip mean something.
+ELSET_ORIGINATORS = ("18 SDS", "Space-Track")
 
 
 def _demo_group(specs, start, end, seed):

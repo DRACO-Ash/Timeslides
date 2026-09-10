@@ -36,6 +36,19 @@ class StateVector:
     r: np.ndarray               # km, 3-vector
     v: np.ndarray               # km/s, 3-vector
     frame: str = "TEME"         # UDL referenceFrame
+    # Who produced this record, as the UDL reported it. The provider is already
+    # known from the query, so this is the record's own claim about itself and
+    # is kept for the duplicate check and the tooltip.
+    source: str = ""
+    origin: str = ""
+    # The feed's own creation stamp, used to resolve a conflict the same way on
+    # every run rather than by arrival order.
+    created: str = ""
+
+    def identity(self) -> tuple:
+        """What makes two records from one provider the same measurement."""
+        return (self.epoch, tuple(self.r.tolist()), tuple(self.v.tolist()),
+                self.frame)
 
 
 @dataclass
@@ -43,9 +56,19 @@ class Elset:
     epoch: dt.datetime
     line1: str
     line2: str
+    # The element-set series is the one series that is always plotted and never
+    # had a provenance label, because unlike the state-vector queries it is not
+    # filtered by source: whatever the tenant holds on /udl/elset comes back.
+    # So each record carries its own.
+    source: str = ""
+    origin: str = ""
+    created: str = ""
 
     def satrec(self) -> Satrec:
         return Satrec.twoline2rv(self.line1, self.line2)
+
+    def identity(self) -> tuple:
+        return (self.epoch, self.line1, self.line2)
 
 
 @dataclass
@@ -55,6 +78,9 @@ class ObjectData:
     colour: str
     state_series: dict = field(default_factory=dict)   # source key -> [StateVector]
     elsets: list = field(default_factory=list)         # TLE series
+    # Duplicate and conflict findings from ingestion, per source key. Carried
+    # on the object so the report can show them rather than only the pod log.
+    findings: list = field(default_factory=list)
 
 
 # UDL state-vector providers, queried as /udl/statevector?source=<udl_source>.
@@ -99,6 +125,12 @@ STATE_SOURCES = [
         "frame": "J2000"},
 ]
 STATE_SOURCE_KEYS = [s["key"] for s in STATE_SOURCES]
+
+# What a record's provenance is called when the feed gave it none. Not a guess
+# at who produced it: a statement that nobody said. Lives here because both the
+# UDL client and the report need it, and the report must not import the
+# transport.
+UNATTRIBUTED = "source not stated"
 
 # The element-set series. Not a provider: it is every two-line element set in
 # the window propagated to its own epoch, and the source of the reference orbit.

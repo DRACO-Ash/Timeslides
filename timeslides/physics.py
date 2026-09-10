@@ -200,20 +200,32 @@ def reference_satrec(objects, ref_sat_no, ref_epoch):
 
 
 def _state_offsets(svs: list, ref_sat: Satrec, sign: float) -> list:
-    """One state-vector series against the reference orbit -> [(epoch, seconds)]."""
+    """One state-vector series against the reference orbit.
+
+    -> [(epoch, seconds, source)]. The source travels with the point rather
+    than being reconstructed alongside it, because two lists that have to stay
+    in the same order are two chances to get the order wrong.
+    """
     ordered = sorted(svs, key=lambda s: s.epoch)
     epochs = [s.epoch for s in ordered]
     r_ref, v_ref = propagate_batch(ref_sat, epochs)
     r_obs = to_teme_batch(ordered)
     offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
-    return list(zip(epochs, offsets, strict=True))
+    return [(sv.epoch, off, sv.source)
+            for sv, off in zip(ordered, offsets, strict=True)]
 
 
 def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
-    """The TLE series against the reference orbit -> [(epoch, seconds)].
+    """The TLE series against the reference orbit.
 
-    Each element set carries its own orbit, so this is one SGP4 call per point
-    for the observed side and one batched call for the reference side.
+    -> [(epoch, seconds, source)]. Each element set carries its own orbit, so
+    this is one SGP4 call per point for the observed side and one batched call
+    for the reference side.
+
+    The source matters more here than anywhere else on the plot. Unlike the
+    state-vector series, this one is not filtered by provider: whatever the
+    tenant holds on /udl/elset comes back, so a point's originator is a
+    property of the point and not of the series it sits in.
     """
     ordered = sorted(elsets, key=lambda e: e.epoch)
     if not ordered:
@@ -222,14 +234,20 @@ def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
     r_ref, v_ref = propagate_batch(ref_sat, epochs)
     r_obs = np.array([propagate(e.satrec(), e.epoch)[0] for e in ordered])
     offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
-    return list(zip(epochs, offsets, strict=True))
+    return [(e.epoch, off, e.source)
+            for e, off in zip(ordered, offsets, strict=True)]
 
 
 def compute_series(obj, ref_sat, invert: bool) -> dict:
     """Offset every state source and the TLEs of `obj` against the shared
-    reference orbit. Returns {source_key: [(epoch, offset_s), ...]}, one entry
-    per state-vector provider present on the object plus the element-set
-    series under ELSET_KEY."""
+    reference orbit. Returns {source_key: [(epoch, offset_s, source), ...]},
+    one entry per state-vector provider present on the object plus the
+    element-set series under ELSET_KEY.
+
+    `source` is the record's own account of its originator, which may be empty
+    where the feed did not give one. It is per point rather than per series
+    because the element-set query is not filtered by provider.
+    """
     sign = -1.0 if invert else 1.0
     out = {key: _state_offsets(svs, ref_sat, sign)
            for key, svs in obj.state_series.items()}

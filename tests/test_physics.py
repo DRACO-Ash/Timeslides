@@ -84,13 +84,13 @@ def test_compute_series_matches_original_scalar_implementation(
         want = _scalar_compute_series(obj, ref_sat, invert)
         assert set(got) == set(want)
         for key in want:
-            assert [e for e, _ in got[key]] == [e for e, _ in want[key]]
+            assert [p[0] for p in got[key]] == [p[0] for p in want[key]]
             # Not asserted exactly equal: einsum sums the projection in a
             # different order from np.dot, worth about 1e-13 seconds. See the
             # module docstring in timeslides/physics.py. The tolerance is still
             # ten orders of magnitude tighter than the data warrants.
             np.testing.assert_allclose(
-                [v for _, v in got[key]], [v for _, v in want[key]],
+                [p[1] for p in got[key]], [p[1] for p in want[key]],
                 rtol=1e-11, atol=1e-9,
                 err_msg=f"series {key} diverged from the original implementation")
 
@@ -100,8 +100,9 @@ def test_offsets_are_plain_python_floats(demo_objects, ref_sat):
     scalars. A numpy float here would fail only at render time."""
     series = physics.compute_series(demo_objects[0], ref_sat, False)
     for points in series.values():
-        for _, value in points:
-            assert type(value) is float
+        for point in points:
+            assert type(point[1]) is float
+            assert isinstance(point[2], str), "the source travels with the point"
 
 
 def test_batch_propagation_matches_scalar(demo_objects, ref_sat):
@@ -228,8 +229,8 @@ def test_reference_object_sits_near_zero_against_itself(demo_objects, ref_sat):
     ref_series = physics.compute_series(ref, ref_sat, False)
     other_series = physics.compute_series(other, ref_sat, False)
     for key in ("leolabs", "northstar"):
-        assert max(abs(v) for _, v in ref_series[key]) < 0.5, key
-        assert max(abs(v) for _, v in other_series[key]) > 50.0, key
+        assert max(abs(p[1]) for p in ref_series[key]) < 0.5, key
+        assert max(abs(p[1]) for p in other_series[key]) > 50.0, key
 
 
 def test_demo_tle_series_drifts_because_of_the_tle_text_round_trip(demo_objects, ref_sat):
@@ -248,8 +249,8 @@ def test_demo_tle_series_drifts_because_of_the_tle_text_round_trip(demo_objects,
     """
     ref = next(o for o in demo_objects if o.sat_no == 59884)
     series = physics.compute_series(ref, ref_sat, False)
-    assert max(abs(v) for _, v in series[ELSET_KEY]) > 1.0
-    assert max(abs(v) for _, v in series["leolabs"]) < 0.5
+    assert max(abs(p[1]) for p in series[ELSET_KEY]) > 1.0
+    assert max(abs(p[1]) for p in series["leolabs"]) < 0.5
 
 
 def test_inverting_the_sign_negates_every_point(demo_objects, ref_sat):
@@ -257,9 +258,10 @@ def test_inverting_the_sign_negates_every_point(demo_objects, ref_sat):
     plain = physics.compute_series(obj, ref_sat, False)
     flipped = physics.compute_series(obj, ref_sat, True)
     for key in plain:
-        for (e1, v1), (e2, v2) in zip(plain[key], flipped[key], strict=True):
-            assert e1 == e2
-            assert v1 == -v2
+        for one, two in zip(plain[key], flipped[key], strict=True):
+            assert one[0] == two[0]
+            assert one[1] == -two[1]
+            assert one[2] == two[2], "the source is not affected by the sign"
 
 
 def test_demo_modes_build_two_groups_with_both_data_modes():

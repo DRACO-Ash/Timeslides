@@ -129,6 +129,73 @@ that refuses those calls. Four mounts:
 A test that patches a module tests that module. It does not test the mount.
 That distinction is why the third release above shipped broken.
 
+## Provenance: which source is a point actually from
+
+The state-vector series are queried per provider
+(`/udl/statevector?source=KBR`), so a triangle is a KBR report by
+construction. The element-set series is not: the query is
+`/udl/elset?epoch=...&satNo=...` with **no source filter**, so whatever the
+tenant holds comes back, from any originator.
+
+That made the one series which is always plotted and cannot be deselected also
+the only one with no attribution. It was asked, correctly, whether "Element
+sets" meant 18 SDS, Space-Track or KBR, and the application could not say.
+
+● Each record now carries its own `source`, `origin` and `created`, read
+  through `PROVENANCE_FIELDS` in `timeslides/udl.py`. Those names are aliased
+  the same way as the on-orbit fields and for the same reason: **they come from
+  the public UDL data model, not from a call against your tenant.** A name that
+  does not match degrades to "source not stated" rather than raising.
+● The originator travels with the point, not alongside it. `compute_series`
+  returns `(epoch, offset, source)` triples, so there is no second list that
+  could fall out of order with the first.
+● The element-set tooltip shows it: `Element sets · 18 SDS`. State-vector
+  tooltips do not repeat their provider, because the query already fixed it and
+  the label above the line says it.
+● `udl.elset.sources` is logged on every elset query, listing the distinct
+  originators the tenant actually returned. That is the answer to "which
+  source", from the tenant rather than from the data model.
+
+On 18 SDS versus Space-Track: 18th Space Defense Squadron produces the general
+perturbations catalogue and Space-Track is its public distribution front end,
+so both labels commonly describe the same lineage. Which label your tenant
+attaches is a property of your tenant, and the log above is what tells you.
+
+**A literal middot, not `&middot;`.** Plotly draws its tooltip as SVG text and
+does not decode HTML entities there, so the entity appeared on screen verbatim.
+Only hovering a real point in a real browser caught that, which is why the
+browser suite hovers rather than inspecting the document.
+
+## Duplicate and conflicting reports
+
+A waterfall of provenance-labelled points is only as good as the claim that
+each point is one independent report, and duplication breaks that claim
+invisibly: two records at one epoch overplot, so the chart looks identical
+whether a source sent one report or five. Checked at ingestion, in
+`timeslides/quality.py`, before anything reaches a figure.
+
+Two things are separated because they matter differently:
+
+| | Definition | Effect on the chart | Handling |
+|---|---|---|---|
+| **Duplicate** | Same source, same epoch, same values | None; they overplot | Collapsed, counted, shown as a note |
+| **Conflict** | Same source, same epoch, **different** values | One is plotted and one is not | One kept, shown as an alert |
+
+● **Same source only.** Two originators reporting one object at one epoch is
+  two independent element sets, which is the plot working. `dedupe_mixed`
+  groups by the record's own source first, so nothing is ever deduplicated
+  against another producer.
+● **Conflicts resolve the same way on every run**, in favour of the newest
+  `created` stamp, so one feed does not draw two different charts.
+● **The report says whether that choice meant anything.** Two records with no
+  stamp, or with identical stamps, are undecidable: first seen wins and the
+  band says so rather than implying the pick was evidence-based. An earlier
+  version reported identical stamps as "resolved by the feed's creation stamp",
+  which was a false claim about the data.
+● Reported in three places: a `quality.duplicates` audit event, the finding on
+  the object, and a data-quality band in the report panel. A clean feed renders
+  no band at all, so the band stays a finding rather than becoming furniture.
+
 ## Container build: not verified in this session
 
 **The image was not built.** Docker is available here but this session's egress

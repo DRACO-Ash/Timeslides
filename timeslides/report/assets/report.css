@@ -156,3 +156,17 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
   body{overflow:auto} .app{height:auto} .plotwrap{height:70vh}
   .panels{min-height:auto} .panel.active{position:static} }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* Data quality. Shown only when ingestion found something, so it must read as
+   a finding rather than furniture. Its own classes rather than the shell's
+   .err and .note: those live in shell.css, which the report does not load, so
+   reusing the names would have produced an unstyled band inside the frame.
+   The list is tight because it sits in the rail beside the controls. */
+.dq{font-size:11px; line-height:1.45; border-radius:4px; padding:8px 10px;
+    border:1px solid var(--line-strong); background:rgba(18,26,48,0.62)}
+.dq ul{margin:6px 0 0; padding-left:16px}
+.dq li{margin:4px 0}
+.dq b{color:var(--text)}
+.dq-alert{border-color:rgba(198,124,0,0.55); color:var(--muted)}
+.dq-alert > b:first-child{color:var(--copper)}
+.dq-note{color:var(--dim)}

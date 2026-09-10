@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 
 import pytest
@@ -308,3 +309,100 @@ def test_demo_mode_always_keeps_the_element_set_series():
     """It anchors the reference orbit, so it is not optional."""
     html = demo_report(_spec(sources=("leolabs",)))
     assert f'data-src="{ELSET_KEY}"' in html
+
+
+# --------------------------------------------------------------------------- #
+#  Ingestion catches duplication before it reaches a chart
+#
+#  Duplication is invisible on the plot by nature: two reports at one epoch
+#  overplot, so the picture looks identical whether a source sent one or five.
+#  That is the whole reason it has to be caught on the way in.
+# --------------------------------------------------------------------------- #
+class _RepeatingClient(FakeUDL):
+    """A feed that repeats itself: every state vector twice, and one element
+    set duplicated plus one disagreeing at an epoch that already has one."""
+
+    def state_vectors(self, sat_no, start, end, source="LeoLabs",
+                      data_mode="REAL", default_frame="J2000"):
+        svs = super().state_vectors(sat_no, start, end, source, data_mode,
+                                    default_frame)
+        return [*svs, *(copy.deepcopy(sv) for sv in svs)]
+
+    def elsets(self, sat_no, start, end, data_mode="REAL"):
+        els = super().elsets(sat_no, start, end, data_mode)
+        if not els:
+            return els
+        clash = copy.deepcopy(els[0])
+        clash.line2 = clash.line2[:20] + "9" + clash.line2[21:]
+        return [*els, copy.deepcopy(els[0]), clash]
+
+
+def _fetch_one(client, sat_no=59884):
+    from timeslides.pipeline import Fetcher
+
+    fetcher = Fetcher(client, _spec(), client.names)
+    return fetcher.get(sat_no, "REAL")
+
+
+def test_a_repeated_state_vector_is_collapsed_before_the_series_is_built():
+    groups = build_demo_modes(START, END)
+    obj = _fetch_one(_RepeatingClient(groups))
+    clean = _fetch_one(FakeUDL(build_demo_modes(START, END)))
+    for key, series in clean.state_series.items():
+        assert len(obj.state_series[key]) == len(series), key
+
+
+def test_the_repeated_records_are_reported_as_findings_on_the_object():
+    obj = _fetch_one(_RepeatingClient(build_demo_modes(START, END)))
+    assert obj.findings, "duplication has to be reported, not silently dropped"
+    duplicates = sum(f["duplicates"] for f in obj.findings)
+    assert duplicates > 0
+    assert all(f["received"] > f["plotted"] for f in obj.findings)
+
+
+def test_a_disagreeing_element_set_is_reported_as_a_conflict():
+    """Distinct from a duplicate, because which record is plotted changes what
+    the chart says."""
+    obj = _fetch_one(_RepeatingClient(build_demo_modes(START, END)))
+    conflicts = [c for f in obj.findings for c in f["conflicts"]]
+    assert len(conflicts) == 1, conflicts
+
+
+def test_a_clean_feed_produces_no_findings_at_all():
+    """The common case stays quiet, or the band becomes furniture."""
+    obj = _fetch_one(FakeUDL(build_demo_modes(START, END)))
+    assert obj.findings == []
+
+
+def test_two_originators_at_one_epoch_are_not_treated_as_duplication():
+    """The element-set query is not filtered by source. Two producers reporting
+    the same object at the same epoch is two independent element sets, and
+    collapsing them would delete a report the operator is entitled to see."""
+    groups = build_demo_modes(START, END)
+
+    class TwoSources(FakeUDL):
+        def elsets(self, sat_no, start, end, data_mode="REAL"):
+            els = super().elsets(sat_no, start, end, data_mode)
+            if not els:
+                return els
+            other = copy.deepcopy(els[0])
+            other.source = "Some Other Provider"
+            other.line2 = other.line2[:20] + "9" + other.line2[21:]
+            return [*els, other]
+
+    obj = _fetch_one(TwoSources(groups))
+    baseline = _fetch_one(FakeUDL(build_demo_modes(START, END)))
+    assert len(obj.elsets) == len(baseline.elsets) + 1
+    assert obj.findings == []
+
+
+def test_the_findings_reach_the_report_panel():
+    """On the object is not enough; the point is that somebody sees them."""
+    from timeslides.report.builder import _quality_band
+
+    groups = build_demo_modes(START, END)
+    client = _RepeatingClient(groups)
+    html = build_report([_group()], client, _spec())
+    assert "Data quality" in html
+    assert "Same-epoch disagreement" in html
+    assert _quality_band({"findings": [], "duplicates": 0}) == ""

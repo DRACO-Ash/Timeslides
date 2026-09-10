@@ -437,3 +437,89 @@ def test_every_declared_name_alias_is_honoured(client, field):
 def test_every_declared_satno_alias_is_honoured(client, field):
     c, _ = client([[{field: 62902, "name": "COSMOS 2581"}]])
     assert c._onorbit({})[0]["satNo"] == 62902
+
+
+# --------------------------------------------------------------------------- #
+#  Provenance
+#
+#  The element-set query is deliberately not filtered by source, so a point's
+#  originator is a property of the point. These names come from the public UDL
+#  data model rather than a call against a tenant, so the aliasing and the
+#  degradation matter as much as the happy path.
+# --------------------------------------------------------------------------- #
+def test_an_element_set_carries_the_source_the_feed_gave_it(client):
+    rec = {"epoch": "2026-06-24T00:00:00Z", "line1": "1 X", "line2": "2 X",
+           "source": "18 SDS", "origin": "USSF",
+           "createdAt": "2026-06-24T00:05:00Z"}
+    c, _ = client([[rec]])
+    got = c.elsets(59884, START, END)
+    assert got[0].source == "18 SDS"
+    assert got[0].origin == "USSF"
+    assert got[0].created == "2026-06-24T00:05:00Z"
+
+
+@pytest.mark.parametrize("field", ["source", "sourceDL", "dataSource",
+                                   "origNetwork", "originator", "provider"])
+def test_the_source_is_read_through_its_aliases(client, field):
+    """A tenant that spells it differently must still be attributed, because
+    the alternative is a point that silently claims nobody produced it."""
+    rec = {"epoch": "2026-06-24T00:00:00Z", "line1": "1 X", "line2": "2 X",
+           field: "Space-Track"}
+    c, _ = client([[rec]])
+    assert c.elsets(59884, START, END)[0].source == "Space-Track"
+
+
+def test_a_record_with_no_provenance_degrades_to_empty_not_an_error(client):
+    """Reporting it as unattributed is the report's job. The client's job is
+    not to raise over a missing optional field."""
+    rec = {"epoch": "2026-06-24T00:00:00Z", "line1": "1 X", "line2": "2 X"}
+    c, _ = client([[rec]])
+    got = c.elsets(59884, START, END)
+    assert got[0].source == ""
+    assert got[0].created == ""
+
+
+def test_a_state_vector_carries_its_provenance_too(client):
+    rec = {**sv_record(), "source": "KBR", "createdAt": "2026-06-24T00:05:00Z"}
+    c, _ = client([[rec]])
+    got = c.state_vectors(59884, START, END, source="KBR")
+    assert got[0].source == "KBR"
+    assert got[0].created == "2026-06-24T00:05:00Z"
+
+
+def test_the_element_set_query_is_not_filtered_by_source(client):
+    """The behaviour behind the whole feature. Adding a source filter here
+    would quietly hide every other originator the tenant holds."""
+    c, session = client([[]])
+    c.elsets(59884, START, END)
+    assert "source" not in session.calls[0]["params"]
+
+
+def test_a_state_vector_query_is_filtered_by_source(client):
+    """The contrast that makes the element-set tooltip necessary."""
+    c, session = client([[]])
+    c.state_vectors(59884, START, END, source="KBR")
+    assert session.calls[0]["params"]["source"] == "KBR"
+
+
+def test_the_originators_a_tenant_actually_returns_are_logged(client, caplog):
+    """The answer to "which source are the element sets from" is a property of
+    the tenant, and no amount of reading the data model provides it. So the
+    tenant is asked and the answer recorded."""
+    recs = [{"epoch": "2026-06-24T00:00:00Z", "line1": "1 A", "line2": "2 A",
+             "source": "18 SDS"},
+            {"epoch": "2026-06-24T01:00:00Z", "line1": "1 B", "line2": "2 B",
+             "source": "KBR"},
+            {"epoch": "2026-06-24T02:00:00Z", "line1": "1 C", "line2": "2 C"}]
+    c, _ = client([recs])
+    with caplog.at_level(logging.INFO, logger="timeslides"):
+        c.elsets(59884, START, END)
+    logged = [r for r in caplog.records if r.getMessage() == "udl.elset.sources"]
+    assert len(logged) == 1
+    assert logged[0].fields["sources"] == ["18 SDS", "KBR", "source not stated"]
+    assert logged[0].fields["records"] == 3
+
+
+def test_no_source_log_is_emitted_for_an_empty_response(client):
+    c, _ = client([[]])
+    assert c.elsets(59884, START, END) == []

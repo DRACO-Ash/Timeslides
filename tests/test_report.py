@@ -302,3 +302,162 @@ def test_no_mode_having_an_anchor_is_an_error():
         build_panel(0, grp["name"], grp["sat_order"], grp["names"],
                     grp["objects_by_mode"], ["REAL", "SIM"], grp["reference"],
                     False, (START, END), None, first=True)
+
+
+# --------------------------------------------------------------------------- #
+#  Per-point provenance and the data-quality band
+# --------------------------------------------------------------------------- #
+def _elset_at(minutes, source, line2="2 59884  53.0000 120.0000 0008000",
+              created=""):
+    import datetime as dt
+
+    from timeslides.models import Elset
+    base = dt.datetime(2026, 6, 24, tzinfo=dt.UTC)
+    return Elset(epoch=base + dt.timedelta(minutes=minutes),
+                 line1="1 59884U 24001A   26176.00000000  .00000000  00000+0"
+                       "  00000+0 0  9990",
+                 line2=line2, source=source, created=created)
+
+
+def test_the_element_set_tooltip_carries_the_source_of_each_point():
+    """The element-set query is not filtered by provider, so the series label
+    cannot say who produced any given point. Only the point can."""
+    from timeslides.report.builder import _source_line
+    from timeslides.models import ELSET_KEY
+
+    # A literal middot, not the HTML entity: Plotly's hovertemplate decodes
+    # only the basic entities and leaves named ones alone, so the entity
+    # appeared verbatim on screen. Caught by hovering a real point in the
+    # browser suite, which is the only thing that shows it.
+    assert _source_line(ELSET_KEY) == " \u00b7 %{customdata}"
+    assert "&middot;" not in _source_line(ELSET_KEY)
+
+
+def test_a_state_provider_tooltip_does_not_repeat_the_provider_name():
+    """Its query is filtered to one provider, so the name is already on the
+    line above and repeating it is noise."""
+    from timeslides.report.builder import _source_line
+
+    assert _source_line("kbr") == ""
+
+
+def test_the_dataset_carries_one_source_per_point():
+    from timeslides.report.builder import _object_traces
+    from timeslides.models import ELSET_KEY
+    import datetime as dt
+
+    base = dt.datetime(2026, 6, 24, tzinfo=dt.UTC)
+    series = {ELSET_KEY: [(base, 1.0, "18 SDS"),
+                          (base + dt.timedelta(hours=1), 2.0, "Space-Track")]}
+    _xs, _ys, srcs, _card = _object_traces(59884, "OBJECT G", [ELSET_KEY], series)
+    assert srcs == [["18 SDS", "Space-Track"]]
+
+
+def test_a_point_with_no_source_says_so_rather_than_being_blank():
+    from timeslides.models import ELSET_KEY, UNATTRIBUTED
+    from timeslides.report.builder import _object_traces
+    import datetime as dt
+
+    series = {ELSET_KEY: [(dt.datetime(2026, 6, 24, tzinfo=dt.UTC), 1.0, "")]}
+    _xs, _ys, srcs, _card = _object_traces(59884, "OBJECT G", [ELSET_KEY], series)
+    assert srcs == [[UNATTRIBUTED]]
+
+
+def test_a_hostile_source_string_cannot_execute_in_the_tooltip():
+    """These strings come from a UDL tenant and land in a Plotly
+    hovertemplate, which renders as HTML. That is a reflection site."""
+    from timeslides.models import ELSET_KEY
+    from timeslides.report.builder import _object_traces
+    import datetime as dt
+
+    nasty = '<img src=x onerror=alert(1)>'
+    series = {ELSET_KEY: [(dt.datetime(2026, 6, 24, tzinfo=dt.UTC), 1.0, nasty)]}
+    _xs, _ys, srcs, _card = _object_traces(59884, "OBJECT G", [ELSET_KEY], series)
+    assert "<img" not in srcs[0][0]
+    assert "&lt;img" in srcs[0][0]
+    # Plotly parses its pseudo-HTML tags before decoding entities, so the
+    # escaped form is displayed as inert text rather than becoming a tag.
+    # Verified in a browser rather than assumed from the escaping alone.
+
+
+def test_a_clean_feed_renders_no_data_quality_band():
+    """The band is a finding. On a clean feed it must not appear at all, or it
+    becomes furniture and stops being read."""
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import summarise
+
+    assert _quality_band(summarise([])) == ""
+    assert _quality_band(summarise([None, None])) == ""
+
+
+def test_duplicates_alone_render_as_a_note_not_an_alert():
+    """The chart is unaffected by pure duplication, so it does not warrant the
+    same weight as a disagreement."""
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import dedupe, summarise
+
+    _kept, finding = dedupe([_elset_at(0, "18 SDS"), _elset_at(0, "18 SDS")],
+                            "18 SDS", 59884)
+    band = _quality_band(summarise([finding]))
+    assert 'class="dq dq-note"' in band
+    assert "Duplicate reports collapsed" in band
+    assert "arrived more than once" in band
+    assert "18 SDS" in band
+
+
+def test_a_same_epoch_disagreement_renders_as_an_alert():
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import dedupe, summarise
+
+    _kept, finding = dedupe([_elset_at(0, "18 SDS", line2="2 A"),
+                             _elset_at(0, "18 SDS", line2="2 B")],
+                            "18 SDS", 59884)
+    band = _quality_band(summarise([finding]))
+    assert 'class="dq dq-alert"' in band
+    assert "Same-epoch disagreement" in band
+    assert "2026-06-24T00:00:00Z" in band
+
+
+def test_the_band_says_whether_the_choice_of_record_meant_anything():
+    """An analyst reading the chart needs to know whether the plotted record
+    won on evidence or on arrival order."""
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import dedupe, summarise
+
+    decided = dedupe([_elset_at(0, "18 SDS", line2="2 A", created="...01Z"),
+                      _elset_at(0, "18 SDS", line2="2 B", created="...05Z")],
+                     "18 SDS")[1]
+    assert "resolved by the feed's creation stamp" in _quality_band(
+        summarise([decided]))
+
+    tied = dedupe([_elset_at(0, "18 SDS", line2="2 A", created="...01Z"),
+                   _elset_at(0, "18 SDS", line2="2 B", created="...01Z")],
+                  "18 SDS")[1]
+    assert "nothing in the feed distinguishes them" in _quality_band(
+        summarise([tied]))
+
+
+def test_a_long_list_of_conflicting_epochs_is_truncated():
+    """The band sits in the rail beside the controls; it cannot be a wall."""
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import dedupe, summarise
+
+    records = []
+    for i in range(6):
+        records.append(_elset_at(i * 10, "18 SDS", line2=f"2 A{i}"))
+        records.append(_elset_at(i * 10, "18 SDS", line2=f"2 B{i}"))
+    _kept, finding = dedupe(records, "18 SDS")
+    band = _quality_band(summarise([finding]))
+    assert "and 3 more" in band
+
+
+def test_a_hostile_source_name_cannot_execute_in_the_band():
+    from timeslides.report.builder import _quality_band
+    from timeslides.quality import dedupe, summarise
+
+    nasty = "<script>alert(1)</script>"
+    _kept, finding = dedupe([_elset_at(0, nasty, line2="2 A"),
+                             _elset_at(0, nasty, line2="2 B")], nasty)
+    band = _quality_band(summarise([finding]))
+    assert "<script>" not in band
+    assert "&lt;script&gt;" in band

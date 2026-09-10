@@ -28,8 +28,25 @@ import numpy as np
 
 from .audit import event
 from .errors import UpstreamError
-from .models import DATA_MODES, STATE_SOURCES, Elset, StateVector
+from .models import (DATA_MODES, STATE_SOURCES, UNATTRIBUTED, Elset,
+                     StateVector)
 from .ratelimit import TokenBucket
+
+# Provenance fields, on both the elset and state-vector records. Aliased the
+# same way as the onorbit fields and for the same reason: these names come from
+# the public UDL data model, not from a call against your tenant.
+#
+# `source` is the originator of the record. `origin` is the system that
+# delivered it, which is often the same and sometimes not. `created` is the
+# feed's own ingest stamp, used only to resolve a same-epoch conflict the same
+# way on every run.
+PROVENANCE_FIELDS = {
+    "source": ("source", "sourceDL", "dataSource", "origNetwork", "origin",
+               "originator", "provider"),
+    "origin": ("origin", "origNetwork", "sourceDL"),
+    "created": ("createdAt", "createdDate", "insertDate", "recordCreated",
+                "ingestDate"),
+}
 
 # UDL onorbit record -> what this application calls it. One place to correct.
 ONORBIT_FIELDS = {
@@ -42,6 +59,12 @@ ONORBIT_FIELDS = {
     "launch_date": ("launchDate",),
     "decay_date": ("decayDate",),
 }
+
+
+def _provenance(rec: dict) -> dict:
+    """The record's own account of where it came from, as far as it gives one."""
+    return {name: str(_first(rec, keys) or "")
+            for name, keys in PROVENANCE_FIELDS.items()}
 
 
 def _first(rec: dict, keys) -> object:
@@ -178,6 +201,7 @@ class UDLClient:
                 r=np.array([rec["xpos"], rec["ypos"], rec["zpos"]], dtype=float),
                 v=np.array([rec["xvel"], rec["yvel"], rec["zvel"]], dtype=float),
                 frame=frame,
+                **_provenance(rec),
             ))
         if missing:
             # The original printed this to stderr. It matters: a record with no
@@ -202,7 +226,17 @@ class UDLClient:
             line1, line2 = rec.get("line1"), rec.get("line2")
             if not (line1 and line2):
                 line1, line2 = elset_to_tle(rec)   # rebuild from mean elements
-            out.append(Elset(epoch=parse_epoch(rec["epoch"]), line1=line1, line2=line2))
+            out.append(Elset(epoch=parse_epoch(rec["epoch"]), line1=line1,
+                             line2=line2, **_provenance(rec)))
+        if out:
+            # This query is deliberately not filtered by source, so what comes
+            # back is whatever the tenant holds. Which originators those are is
+            # a question about the tenant that no amount of reading the data
+            # model answers, so the answer is logged the first time a render
+            # asks for it.
+            sources = sorted({rec.source or UNATTRIBUTED for rec in out})
+            event("udl.elset.sources", sat_no=sat_no, sources=sources,
+                  records=len(out))
         return out
 
     # --- catalogue, for the picker ---------------------------------------- #

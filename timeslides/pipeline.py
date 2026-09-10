@@ -14,7 +14,9 @@ from dataclasses import dataclass
 
 from .audit import event
 from .errors import ComputeError, ValidationError
-from .models import (DATA_MODES, ObjectData, STATE_SOURCES, STATE_SOURCE_KEYS)
+from .models import (DATA_MODES, STATE_SOURCE_KEYS, STATE_SOURCES,
+                     UNATTRIBUTED, ObjectData)
+from .quality import dedupe, dedupe_mixed
 from .report.builder import build_panel, render_report
 
 MAX_WINDOW_DAYS = 90
@@ -106,11 +108,25 @@ class Fetcher:
                 source=src["udl_source"], data_mode=enum,
                 default_frame=src.get("frame", "J2000"))
             self.calls += 1
+            # Checked here rather than in the client: the client is transport,
+            # and which records count as the same measurement is a judgement
+            # about the data. This query is filtered to one provider, so every
+            # record in it is from that provider by construction.
+            svs, finding = dedupe(svs, src["label"], sat_no)
+            if finding:
+                obj.findings.append(finding)
             if svs:
                 obj.state_series[src["key"]] = svs
-        obj.elsets = self.client.elsets(sat_no, self.spec.start, self.spec.end,
-                                        data_mode=enum)
+
+        elsets = self.client.elsets(sat_no, self.spec.start, self.spec.end,
+                                    data_mode=enum)
         self.calls += 1
+        # The element-set query is not filtered by source, so this batch can
+        # hold several originators and each is only ever deduplicated against
+        # itself. Two sources at one epoch is two independent element sets,
+        # which is the plot working.
+        obj.elsets, elset_findings = dedupe_mixed(elsets, UNATTRIBUTED, sat_no)
+        obj.findings.extend(elset_findings)
         self._cache[(sat_no, mode_label)] = obj
         return obj
 
