@@ -1047,3 +1047,190 @@ def test_a_state_provider_point_names_its_provider_once(page, live_server):
     tip = _hover_first_point(page, frame, ".js-plotly-plot .points path")
     assert tip.count("LeoLabs") == 1, tip
     _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  Choosing which groups a render covers
+#
+#  Rendering every saved group every time is the wrong default once there is
+#  more than a couple: slow, it fetches data nobody asked for, and it buries
+#  the group somebody actually cares about behind tabs.
+# --------------------------------------------------------------------------- #
+def test_every_group_has_a_checkbox_and_they_start_ticked(page, fresh_server):
+    """Selected by default, so a first visit behaves as the application did
+    before there was a choice to make."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    total = page.locator("#groups .grp").count()
+    assert page.locator("input[data-pick]").count() == total
+    assert page.locator("input[data-pick]:checked").count() == total
+    assert page.locator(".grp.sel").count() == total
+    assert not page.locator("#runbtn").is_disabled()
+    _assert_clean(page)
+
+
+def test_the_checkbox_is_big_enough_to_hit(page, fresh_server):
+    """It says what a render will cover, and at the browser default size it
+    read as decoration next to the group name."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    box = page.locator("input[data-pick]").first.bounding_box()
+    assert box["width"] >= 18 and box["height"] >= 18, box
+
+
+def test_unticking_a_group_takes_it_out_of_the_next_render(page, fresh_server):
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    total = page.locator("#groups .grp").count()
+    page.locator("input[data-pick]").first.uncheck()
+    page.wait_for_function(
+        f"() => document.querySelectorAll('.grp.sel').length === {total - 1}")
+    assert f"{total - 1} of {total} groups will be rendered" in \
+        page.locator("#groupcount").inner_text()
+    assert page.locator("#selcount").inner_text() == f"{total - 1}/{total}"
+    _assert_clean(page)
+
+
+def test_an_unselected_group_is_visibly_recessive(page, fresh_server):
+    """With only a highlight on the selected rows, telling which were in and
+    which were out took a second look."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.locator("input[data-pick]").first.uncheck()
+    page.wait_for_selector(".grp:not(.sel)")
+    off = page.locator(".grp:not(.sel)").first.evaluate(
+        "el => getComputedStyle(el).opacity")
+    on = page.locator(".grp.sel").first.evaluate(
+        "el => getComputedStyle(el).opacity")
+    assert float(off) < float(on)
+
+
+def test_selecting_none_disables_the_render_button(page, fresh_server):
+    """An empty selection must never quietly mean everything: the API reads an
+    empty group list as every live group, so the button is stopped instead."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#selnone")
+    page.wait_for_function("() => document.getElementById('runbtn').disabled")
+    assert page.locator("input[data-pick]:checked").count() == 0
+    assert "No groups selected" in page.locator("#groupcount").inner_text()
+    _assert_clean(page)
+
+
+def test_select_all_puts_every_group_back(page, fresh_server):
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    total = page.locator("#groups .grp").count()
+    page.click("#selnone")
+    page.wait_for_function("() => document.getElementById('runbtn').disabled")
+    page.click("#selall")
+    page.wait_for_function(
+        f"() => document.querySelectorAll('.grp.sel').length === {total}")
+    assert not page.locator("#runbtn").is_disabled()
+    _assert_clean(page)
+
+
+def test_the_selection_survives_a_reload(page, fresh_server):
+    """The point of the feature. "Rather than every time" means the choice
+    sticks, not that it has to be made again on every visit."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    dropped = page.locator("#groups .gn").first.inner_text().strip()
+    page.locator("input[data-pick]").first.uncheck()
+    page.wait_for_selector(".grp:not(.sel)")
+
+    page.reload(wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    state = page.eval_on_selector_all(
+        "#groups .grp",
+        "els => els.map(e => [e.querySelector('.gn').textContent.trim(),"
+        " e.querySelector('input').checked])")
+    assert [name for name, on in state if not on] == [dropped]
+    _assert_clean(page)
+
+
+def test_a_newly_saved_group_arrives_selected(page, fresh_server):
+    """A group you have just built is one you want in the next render."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.locator("input[data-pick]").first.uncheck()
+    page.wait_for_selector(".grp:not(.sel)")
+
+    page.fill("#q", "cosmos")
+    page.click("#searchbtn")
+    page.wait_for_selector("#hits .row")
+    for _ in range(2):
+        page.locator("#hits .row button[data-add]:not([disabled])").first.click()
+    page.fill("#gname", "Fresh Group")
+    page.dispatch_event("#gname", "input")
+    page.click("#savebtn")
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('#groups .gn')]"
+        ".some(e => e.textContent.trim() === 'Fresh Group')")
+    state = page.eval_on_selector_all(
+        "#groups .grp",
+        "els => els.map(e => [e.querySelector('.gn').textContent.trim(),"
+        " e.querySelector('input').checked])")
+    assert dict(state)["Fresh Group"] is True
+    _assert_clean(page)
+
+
+def test_the_run_request_carries_only_the_selected_groups(page, fresh_server):
+    """The assertion that matters. Demo mode draws fixed sample panels, so the
+    report itself cannot show the scope of a render; what the page actually
+    sends can."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    ids = page.evaluate("() => S.groups.map(g => g.id)")
+    page.locator("input[data-pick]").first.uncheck()
+    page.wait_for_selector(".grp:not(.sel)")
+
+    sent = []
+    page.on("request", lambda r: sent.append(r.post_data)
+            if r.method == "POST" and r.url.endswith("/api/runs") else None)
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+
+    assert len(sent) == 1, sent
+    body = json.loads(sent[0])
+    assert body["groupIds"] == ids[1:], body
+    assert ids[0] not in body["groupIds"]
+    _assert_clean(page)
+
+
+def test_the_render_button_is_the_most_prominent_control(page, fresh_server):
+    """It used to sit at the end of a wrapping row of inputs, which made it
+    one more field rather than the thing the whole tab is for."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    run = page.locator("#runbtn")
+    box = run.bounding_box()
+    assert box["height"] >= 40, box
+    assert box["width"] >= 180, box
+    size = run.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
+    others = page.eval_on_selector_all(
+        ".ctrls .btn, .search .btn",
+        "els => els.map(e => parseFloat(getComputedStyle(e).fontSize))")
+    assert all(size > other for other in others), (size, others)
+
+
+def test_the_render_button_signals_when_it_becomes_usable(page, fresh_server):
+    """Drawing the eye once a selection exists. A one-shot cue rather than a
+    permanent animation, which would stop being a signal."""
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    run = page.locator("#runbtn")
+    assert "armed" in (run.get_attribute("class") or "")
+
+    page.click("#selnone")
+    page.wait_for_function("() => document.getElementById('runbtn').disabled")
+    assert "armed" not in (run.get_attribute("class") or "")
+    plain = run.evaluate("el => getComputedStyle(el).boxShadow")
+
+    page.click("#selall")
+    page.wait_for_function(
+        "() => document.getElementById('runbtn').classList.contains('armed')")
+    lit = run.evaluate("el => getComputedStyle(el).boxShadow")
+    assert lit != plain, "the armed state has to look different"
+    assert lit != "none"
+    _assert_clean(page)

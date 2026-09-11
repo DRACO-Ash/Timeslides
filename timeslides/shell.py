@@ -89,7 +89,10 @@ def _configure_panel(storage=None) -> str:
       </section>
 
       <section>
-        <h2>Saved groups</h2>
+        <h2>Saved groups <span class="gm" id="selcount"></span>
+          <button class="btn sm ghost" id="selall">Select all</button>
+          <button class="btn sm ghost" id="selnone">Select none</button>
+        </h2>
         <div id="groupsmsg"></div>
         <div id="groups"></div>
       </section>
@@ -117,10 +120,14 @@ def _configure_panel(storage=None) -> str:
             <label>Sign</label>
             <div class="srcseg"><button class="srcchip" id="invert">Invert</button></div>
           </div>
-          <button class="btn" id="runbtn" disabled>Render report</button>
         </div>
         <div id="runmsg"></div>
-        <p class="note" id="groupcount"></p>
+        <!-- The primary action, on its own row rather than tucked at the end
+             of a wrapping row of inputs, where it read as one more field. -->
+        <div class="runbar">
+          <button class="btn go" id="runbtn" disabled>Render report</button>
+          <p class="note" id="groupcount" aria-live="polite"></p>
+        </div>
         <p class="hint">Shape encodes the source and colour encodes the object.
         Filled shapes are measured state vectors from a provider. The one open
         shape is <b style="color:var(--muted)">{esc(ELSET_LABEL)}</b>, which is

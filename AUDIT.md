@@ -196,6 +196,40 @@ Two things are separated because they matter differently:
   the object, and a data-quality band in the report panel. A clean feed renders
   no band at all, so the band stays a finding rather than becoming furniture.
 
+## Choosing what a render covers
+
+Every saved group used to be rendered on every run. Once there is more than a
+couple that is the wrong default: it is slow, it fetches data nobody asked for,
+and it buries the group somebody actually cares about behind tabs.
+
+● A checkbox on each group row, deliberately 20px rather than the browser
+  default, because it states what a render will cover. Selected rows carry a
+  blue left edge and a tint; unselected rows are dimmed, because with only a
+  highlight it took a second look to tell which were in.
+● **Selected by default**, so a first visit behaves as the application did
+  before there was a choice to make.
+● **The selection persists** in `localStorage`, which is what "rather than
+  every time" means. Storage is allowed to fail outright (a private window,
+  blocked site data, a browser that throws on access); remembering the choice
+  is a convenience and a refusal falls back to selecting everything.
+● Reconciliation on every list load: an archived group drops out so it cannot
+  sit invisibly in the selection and be rendered; a group created since the
+  last draw arrives selected, because one you have just built is one you want.
+● **An empty selection disables the render button rather than sending one.**
+  The API reads an empty `groupIds` as every live group, so a
+  deselected-everything state must never reach it. Asserted on both sides.
+
+The render button now has its own row under a rule, at 15px/700 with 14px
+padding, instead of sitting at the end of a wrapping row of inputs where it
+read as one more field. It gains a ring and a single pulse when a selection
+makes it usable: one shot rather than a permanent animation, which stops being
+a signal and is fatiguing, and skipped entirely under
+`prefers-reduced-motion`.
+
+Proved by asserting the POST body the page actually sends, not by reading the
+report: demo mode draws fixed sample panels, so the report cannot show the
+scope of a render.
+
 ## Container build: not verified in this session
 
 **The image was not built.** Docker is available here but this session's egress

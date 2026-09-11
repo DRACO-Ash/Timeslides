@@ -50,7 +50,21 @@ globalThis.document = {
   body: { addEventListener: function () {} }
 };
 globalThis.window = {
-  addEventListener: function (name, fn) { globalThis.__handlers[name] = fn; }
+  addEventListener: function (name, fn) { globalThis.__handlers[name] = fn; },
+  /* The picker remembers which groups a render covers. A store that works is
+     the normal case; __storageThrows exercises the one that does not, which is
+     a private window, blocked site data, or a browser that throws on access. */
+  localStorage: {
+    _v: {},
+    getItem: function (k) {
+      if (globalThis.__storageThrows) throw new Error("denied");
+      return Object.prototype.hasOwnProperty.call(this._v, k) ? this._v[k] : null;
+    },
+    setItem: function (k, v) {
+      if (globalThis.__storageThrows) throw new Error("denied");
+      this._v[k] = String(v);
+    }
+  }
 };
 """
 
@@ -291,13 +305,6 @@ def test_the_arrow_matches_the_state(report_js, state, want):
 # --------------------------------------------------------------------------- #
 #  picker.js: the small label helpers
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("count,want", [
-    (0, ""), (1, "1 group will be rendered"), (3, "3 groups will be rendered"),
-])
-def test_the_group_count_label_is_pluralised(picker_js, count, want):
-    assert _call(picker_js, f"groupCountLabel({count})") == want
-
-
 def test_a_provider_that_answered_says_so(picker_js):
     row = {"available": True, "udlSource": "LeoLabs"}
     assert _call(picker_js, f"chipTitle({json.dumps(row)})") == \
@@ -334,3 +341,103 @@ def test_progress_shows_the_fraction_and_the_current_group(picker_js):
 def test_progress_omits_the_group_when_none_is_reported(picker_js):
     job = {"progress": {"done": 2, "total": 3, "current": ""}}
     assert _call(picker_js, f"progressDetail({json.dumps(job)})").strip() == "2/3"
+
+
+# --------------------------------------------------------------------------- #
+#  Choosing which groups a render covers
+#
+#  Rendering everything every time is the wrong default once there is more than
+#  a couple of groups: slow, it fetches data nobody asked for, and it buries
+#  the group somebody actually cares about behind tabs.
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def picker():
+    """A fresh context per test: the selection is stateful."""
+    return _context("picker.js", {"shell-data": SHELL_DATA})
+
+
+def _load_groups(ctx, ids):
+    """Put a group list into state and run the reconciliation."""
+    groups = json.dumps([{"id": i, "name": i, "sats": [1, 2], "reference": 1}
+                         for i in ids])
+    ctx.eval(f"S.groups = {groups}; reconcileSelection();")
+    return _call(ctx, "[...S.selected].sort()")
+
+
+@pytest.mark.parametrize("chosen,total,want", [
+    (3, 3, "3 groups will be rendered"),
+    (1, 1, "1 group will be rendered"),
+    (2, 5, "2 of 5 groups will be rendered"),
+    (1, 4, "1 of 4 groups will be rendered"),
+    (0, 4, "No groups selected. Tick at least one to render."),
+    (0, 0, ""),
+])
+def test_the_count_line_says_what_will_actually_be_rendered(picker, chosen,
+                                                            total, want):
+    assert _call(picker, f"groupCountLabel({chosen}, {total})") == want
+
+
+def test_everything_is_selected_when_there_is_nothing_remembered(picker):
+    """The behaviour the application had before there was a choice to make, so
+    a first visit is not a blank page with a dead button."""
+    assert _load_groups(picker, ["a", "b", "c"]) == ["a", "b", "c"]
+
+
+def test_a_remembered_selection_is_restored(picker):
+    picker.eval('window.localStorage.setItem("timeslides.selectedGroups",'
+                ' JSON.stringify(["b"]));')
+    assert _load_groups(picker, ["a", "b", "c"]) == ["b"]
+
+
+def test_a_group_created_since_the_last_draw_arrives_selected(picker):
+    """A group you have just built is one you want in the next render."""
+    _load_groups(picker, ["a", "b"])
+    picker.eval("S.selected.delete('a');")
+    assert _load_groups(picker, ["a", "b", "new"]) == ["b", "new"]
+
+
+def test_an_archived_group_drops_out_of_the_selection(picker):
+    """Otherwise it sits there invisibly and gets rendered."""
+    _load_groups(picker, ["a", "b", "c"])
+    assert _load_groups(picker, ["a", "c"]) == ["a", "c"]
+
+
+def test_the_selection_survives_a_reload(picker):
+    """What "rather than every time" actually means: the choice sticks."""
+    _load_groups(picker, ["a", "b", "c"])
+    picker.eval("toggleGroup('b', false);")
+    stored = _call(
+        picker, 'JSON.parse(window.localStorage.getItem("timeslides.selectedGroups"))')
+    assert sorted(stored) == ["a", "c"]
+
+
+def test_toggling_a_group_off_and_on_again_is_symmetrical(picker):
+    _load_groups(picker, ["a", "b"])
+    picker.eval("toggleGroup('a', false);")
+    assert _call(picker, "[...S.selected].sort()") == ["b"]
+    picker.eval("toggleGroup('a', true);")
+    assert _call(picker, "[...S.selected].sort()") == ["a", "b"]
+
+
+def test_select_all_and_select_none(picker):
+    _load_groups(picker, ["a", "b", "c"])
+    picker.eval("selectEvery(false);")
+    assert _call(picker, "[...S.selected]") == []
+    picker.eval("selectEvery(true);")
+    assert _call(picker, "[...S.selected].sort()") == ["a", "b", "c"]
+
+
+def test_a_storage_that_refuses_does_not_break_the_selection(picker):
+    """localStorage throws outright in a private window or with site data
+    blocked. Remembering the choice is a convenience; being able to make one is
+    not, so a refusal falls back to selecting everything and carries on."""
+    picker.eval("globalThis.__storageThrows = true;")
+    assert _load_groups(picker, ["a", "b"]) == ["a", "b"]
+    picker.eval("toggleGroup('a', false);")
+    assert _call(picker, "[...S.selected]") == ["b"]
+
+
+def test_a_corrupt_stored_selection_falls_back_rather_than_throwing(picker):
+    picker.eval('window.localStorage.setItem("timeslides.selectedGroups",'
+                ' "not json");')
+    assert _load_groups(picker, ["a", "b"]) == ["a", "b"]

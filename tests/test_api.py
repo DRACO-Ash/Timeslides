@@ -253,6 +253,27 @@ def test_a_run_can_name_specific_groups(client, app_bits):
     assert rendered[0].group_ids == (gid,)
 
 
+def test_a_run_can_name_a_subset_larger_than_one(client, app_bits):
+    """The real use of the group checkboxes: some of them, not one or all."""
+    _, _, _, rendered = app_bits
+    groups = client.get("/api/groups").json()["groups"]
+    chosen = [groups[0]["id"], groups[2]["id"]]
+    r = client.post("/api/runs", json={"groupIds": chosen})
+    _await_run(client, r.json()["id"])
+    assert list(rendered[0].group_ids) == chosen
+    assert groups[1]["id"] not in rendered[0].group_ids
+
+
+def test_an_empty_group_list_still_means_every_group(client, app_bits):
+    """Unchanged, and the reason the page disables its render button on an
+    empty selection rather than sending one: an empty list here is "all", so a
+    deselected-everything state must never reach the API."""
+    _, _, _, rendered = app_bits
+    r = client.post("/api/runs", json={"groupIds": [], "days": 7})
+    _await_run(client, r.json()["id"])
+    assert len(rendered[0].group_ids) == 3
+
+
 def test_an_identical_run_joins_rather_than_re_rendering(client, app_bits):
     _, _, _, rendered = app_bits
     first = client.post("/api/runs", json={"days": 7}).json()

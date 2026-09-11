@@ -20,7 +20,9 @@
          height:100%; min-height:0}
 .cfgmain{padding:18px 22px; overflow:auto; min-width:0}
 .cfgmain h2{font:600 11px/1.2 var(--mono); letter-spacing:.14em; color:var(--dim);
-            text-transform:uppercase; margin:0 0 10px}
+            text-transform:uppercase; margin:0 0 10px;
+            display:flex; align-items:center; gap:8px}
+.cfgmain h2 .gm{margin-left:auto; letter-spacing:0}
 .cfgmain section{margin-bottom:26px}
 /* Sits inside the Configure panel, not in the .app grid. Added as a grid child
  * it took the 1fr row that belongs to .panels and swallowed the whole tab. */
@@ -58,7 +60,23 @@
 /* Group list */
 .grp{background:var(--panel); border:1px solid var(--line); border-radius:8px;
      padding:12px 14px; margin-bottom:10px}
+/* A selected group is the one that will actually be rendered, so it reads as
+   chosen at a glance rather than only by the state of a small control. The
+   unselected state is pushed back as well as the selected one brought forward:
+   with only the highlight, a screenshot of the list took a second look to
+   tell which rows were in and which were out. */
+.grp.sel{border-color:rgba(56,95,175,.55); background:rgba(56,95,175,.10);
+         box-shadow:inset 3px 0 0 var(--blue-l)}
+.grp:not(.sel){opacity:.55; background:transparent}
+.grp:not(.sel):hover{opacity:.8}
 .grp .gh{display:flex; align-items:center; gap:10px; margin-bottom:8px}
+/* Deliberately larger than a default checkbox: this is the control that says
+   what a render will cover, and at the default 13px it read as decoration. */
+.pick{display:flex; align-items:center; flex:none; cursor:pointer;
+      padding:2px; margin:-2px}
+.pick input{width:20px; height:20px; cursor:pointer;
+            accent-color:var(--blue-l); margin:0}
+.pick input:focus-visible{outline:2px solid var(--blue-l); outline-offset:2px}
 .grp .gn{flex:1; min-width:0; font:600 14px/1.2 var(--sans); color:var(--text)}
 .grp .gm{font:11px/1.2 var(--mono); color:var(--dim)}
 .chips{display:flex; flex-wrap:wrap; gap:5px; margin-top:6px}
@@ -81,6 +99,34 @@
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
 /* Run controls */
+/* The primary action. It used to sit at the end of a wrapping row of inputs,
+   which made it one more field rather than the thing the whole tab is for. It
+   now has its own row, full width on a narrow viewport, and it changes
+   appearance the moment a selection makes it usable. */
+.runbar{display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+        margin-top:18px; padding-top:16px; border-top:1px solid var(--line)}
+.runbar .note{margin:0}
+.btn.go{font:700 15px/1.2 var(--sans); padding:14px 30px; border-radius:8px;
+        letter-spacing:.03em; min-width:210px}
+.btn.go:disabled{background:var(--panel-solid); color:var(--dim);
+                 border:1px solid var(--line-strong); opacity:1}
+.btn.go.armed{box-shadow:0 0 0 3px rgba(56,95,175,.28),
+                         0 6px 20px rgba(56,95,175,.30)}
+.btn.go.armed:hover{box-shadow:0 0 0 3px rgba(56,95,175,.40),
+                               0 6px 22px rgba(56,95,175,.40)}
+/* One pulse when it becomes usable, not a permanent animation: something that
+   moves forever in the corner of the eye is fatiguing and stops being a
+   signal. Skipped entirely where the viewer has asked for less motion. */
+@keyframes armpulse{
+  0%{box-shadow:0 0 0 0 rgba(56,95,175,.55), 0 6px 20px rgba(56,95,175,.30)}
+  70%{box-shadow:0 0 0 12px rgba(56,95,175,0), 0 6px 20px rgba(56,95,175,.30)}
+  100%{box-shadow:0 0 0 3px rgba(56,95,175,.28), 0 6px 20px rgba(56,95,175,.30)}
+}
+.btn.go.armed{animation:armpulse .9s ease-out 1}
+@media (prefers-reduced-motion:reduce){
+  .btn.go.armed{animation:none}
+}
+
 .ctrls{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end}
 .ctrl{display:flex; flex-direction:column; gap:5px}
 .ctrl label{display:flex; align-items:center; gap:10px;

@@ -11,6 +11,7 @@ const CFG = JSON.parse(document.getElementById("shell-data").textContent);
 const S = {
   rev: 0,
   groups: [],
+  selected: new Set(),   /* group ids the next render will cover */
   hits: [],          /* catalogue results */
   picked: [],        /* {satNo, name} in the group being built */
   reference: null,
@@ -175,6 +176,76 @@ function nameFor(group, satNo) {
   return cached || `OBJECT ${satNo}`;
 }
 
+/* --- which groups a render covers ---------------------------------------- */
+/* Rendering every saved group every time is the wrong default once somebody
+ * has more than a couple: it is slow, it fetches data nobody asked for, and it
+ * buries the group they actually care about behind tabs. The selection is kept
+ * per browser so the choice survives a reload rather than having to be made
+ * again on every visit. */
+const SEL_KEY = "timeslides.selectedGroups";
+
+function readStoredSelection() {
+  /* Storage is allowed to fail outright: a private window, blocked site data,
+   * or a browser that throws on access. A remembered selection is a
+   * convenience, never a requirement, so any failure falls through to "all". */
+  try {
+    const raw = window.localStorage.getItem(SEL_KEY);
+    return raw ? new Set(JSON.parse(raw)) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function storeSelection() {
+  try {
+    window.localStorage.setItem(SEL_KEY, JSON.stringify([...S.selected]));
+  } catch (_) { /* see readStoredSelection */ }
+}
+
+function reconcileSelection() {
+  /* Called after every load of the group list.
+   *
+   * Three rules, each there for a reason somebody would notice:
+   *   - A group that no longer exists drops out, so an archived group cannot
+   *     sit invisibly in the selection and be rendered.
+   *   - A group that is new since the last visit is selected, because a group
+   *     you have just built is one you want in the next render.
+   *   - No stored selection at all means everything, which is what the
+   *     application did before there was a choice to make.
+   */
+  const live = new Set(S.groups.map(g => g.id));
+  const stored = S.known ? null : readStoredSelection();
+  if (!S.known) {
+    S.known = new Set();
+    if (stored) stored.forEach(id => S.selected.add(id));
+    else live.forEach(id => S.selected.add(id));
+    live.forEach(id => S.known.add(id));
+  }
+  S.groups.forEach(g => {
+    if (!S.known.has(g.id)) {           /* created since the last draw */
+      S.known.add(g.id);
+      S.selected.add(g.id);
+    }
+  });
+  [...S.selected].forEach(id => { if (!live.has(id)) S.selected.delete(id); });
+  [...S.known].forEach(id => { if (!live.has(id)) S.known.delete(id); });
+  storeSelection();
+}
+
+/* These change the selection and nothing else. Redrawing is the caller's job,
+ * so the rule about what is selected can be reasoned about, and tested,
+ * without a document to draw into. */
+function toggleGroup(id, on) {
+  if (on) S.selected.add(id);
+  else S.selected.delete(id);
+  storeSelection();
+}
+
+function selectEvery(on) {
+  S.selected = on ? new Set(S.groups.map(g => g.id)) : new Set();
+  storeSelection();
+}
+
 /* --- group list --------------------------------------------------------- */
 /* The banner at the top of the tab says this too, but the saved-groups list is
  * where somebody looks to check their work, and on a long list it scrolls well
@@ -192,6 +263,7 @@ async function loadGroups() {
     const body = await api("/api/groups");
     S.rev = body.rev;
     S.groups = body.groups || [];
+    reconcileSelection();
     show("groupsmsg", groupsStatus());
   } catch (err) {
     show("groupsmsg", `Could not load groups: ${err.message}`, true);
@@ -199,16 +271,27 @@ async function loadGroups() {
   drawGroups();
 }
 
-function groupCountLabel(count) {
-  if (!count) return "";
-  const plural = count === 1 ? "" : "s";
-  return `${count} group${plural} will be rendered`;
+function groupCountLabel(chosen, total) {
+  if (!total) return "";
+  if (!chosen) return "No groups selected. Tick at least one to render.";
+  /* "1 of 4 groups", not "1 of 4 group": with a scope the noun agrees with the
+   * total, and a scope only appears when the total is at least two. */
+  const all = chosen === total;
+  const plural = all && chosen === 1 ? "" : "s";
+  const scope = all ? "" : ` of ${total}`;
+  return `${chosen}${scope} group${plural} will be rendered`;
 }
 
 function drawGroups() {
-  el("groups").innerHTML = S.groups.map(g => `
-    <div class="grp">
+  el("groups").innerHTML = S.groups.map(g => {
+    const on = S.selected.has(g.id);
+    return `
+    <div class="grp ${on ? "sel" : ""}">
       <div class="gh">
+        <label class="pick" title="Include this group in the next render">
+          <input type="checkbox" data-pick="${esc(g.id)}" ${on ? "checked" : ""}
+                 aria-label="Render ${esc(g.name)}">
+        </label>
         <span class="gn">${esc(g.name)}</span>
         <span class="gm">${g.sats.length} objects</span>
         <button class="btn sm ghost" data-edit="${esc(g.id)}">edit</button>
@@ -217,10 +300,21 @@ function drawGroups() {
       <div class="chips">${g.sats.map(n =>
         `<span class="chip ${n === g.reference ? "ref" : ""}">${n}${
           n === g.reference ? " · ref" : ""}</span>`).join("")}</div>
-    </div>`).join("") ||
+    </div>`;
+  }).join("") ||
     '<p class="note">No groups yet. Build one from the catalogue on the left.</p>';
-  el("runbtn").disabled = S.groups.length === 0;
-  el("groupcount").textContent = groupCountLabel(S.groups.length);
+
+  const chosen = S.groups.filter(g => S.selected.has(g.id)).length;
+  const run = el("runbtn");
+  const armed = chosen > 0;
+  run.disabled = !armed;
+  /* The class is set only on the transition into armed, so the animation that
+   * draws the eye fires once when the operator finishes choosing rather than
+   * running forever in the corner of their vision. */
+  if (armed && !run.classList.contains("armed")) run.classList.add("armed");
+  if (!armed) run.classList.remove("armed");
+  el("groupcount").textContent = groupCountLabel(chosen, S.groups.length);
+  el("selcount").textContent = S.groups.length ? `${chosen}/${S.groups.length}` : "";
 }
 
 async function archiveGroup(id) {
@@ -301,12 +395,16 @@ function selectedSources() {
 
 async function startRun() {
   const body = {
-    groupIds: [],
+    /* The selection, not everything. An empty list means every live group to
+     * the API, which is why the render button is disabled rather than sending
+     * one: an empty selection must never quietly mean "all". */
+    groupIds: S.groups.filter(g => S.selected.has(g.id)).map(g => g.id),
     days: Math.max(1, Math.min(90, Number.parseInt(el("days").value, 10) || 7)),
     modes: selectedModes(),
     sources: selectedSources(),
     invert: el("invert").classList.contains("active")
   };
+  if (!body.groupIds.length) return show("runmsg", "Select at least one group.", true);
   if (!body.modes.length) return show("runmsg", "Select at least one data mode.", true);
   if (!body.sources.length) return show("runmsg", "Select at least one provider.", true);
   el("runbtn").disabled = true;
@@ -398,6 +496,16 @@ function wire() {
   el("savebtn").addEventListener("click", saveGroup);
   el("cancelbtn").addEventListener("click", resetEditor);
   el("runbtn").addEventListener("click", startRun);
+  el("selall").addEventListener("click", () => { selectEvery(true); drawGroups(); });
+  el("selnone").addEventListener("click", () => { selectEvery(false); drawGroups(); });
+  /* Delegated like the other group-row controls, because the list is redrawn
+   * on every change and directly bound handlers would be lost with it. */
+  el("groups").addEventListener("change", e => {
+    const box = e.target.closest("input[data-pick]");
+    if (!box) return;
+    toggleGroup(box.dataset.pick, box.checked);
+    drawGroups();
+  });
   el("probebtn").addEventListener("click", probeSources);
 
   document.querySelectorAll("[data-mode],[data-source],#invert").forEach(b =>
