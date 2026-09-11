@@ -122,9 +122,9 @@ function buildCards(g){
   const wrap = document.getElementById("cards-"+g.id);
   wrap.innerHTML = g.cards.map(c => cardMarkup(c, g.vkms)).join("");
   wrap.querySelectorAll(".card").forEach(el => {
-    el.addEventListener("click", () => toggleObj(g, +el.dataset.obj));
+    el.addEventListener("click", () => toggleObj(g, Number(el.dataset.obj)));
     el.addEventListener("keydown", e => {
-      if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggleObj(g, +el.dataset.obj); }
+      if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggleObj(g, Number(el.dataset.obj)); }
     });
   });
 }
@@ -196,7 +196,7 @@ function apply(g){
   panel.querySelectorAll(".srcseg .srcchip").forEach(b =>
     b.classList.toggle("active", st.sources.has(b.dataset.src)));
   panel.querySelectorAll(".cards .card").forEach(el => {
-    const off = st.hidden.has(+el.dataset.obj);
+    const off = st.hidden.has(Number(el.dataset.obj));
     el.classList.toggle("off", off);
     const eye = el.querySelector(".eye");
     if(eye) eye.textContent = off ? "HIDDEN" : "SHOWN";
@@ -204,8 +204,8 @@ function apply(g){
 }
 
 function showTab(id){
-  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", +p.dataset.panel===id));
-  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", +t.dataset.tab===id));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", Number(p.dataset.panel)===id));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", Number(t.dataset.tab)===id));
   const g = GROUPS.find(x => x.id===id);
   if(g && window.Plotly) Plotly.Plots.resize(g.divId);
 }
@@ -227,7 +227,7 @@ function init(){
     applyData(g);
   });
   document.querySelectorAll(".tab").forEach(t =>
-    t.addEventListener("click", () => showTab(+t.dataset.tab)));
+    t.addEventListener("click", () => showTab(Number(t.dataset.tab))));
   if(GROUPS.length) showTab(GROUPS[0].id);
 }
 window.addEventListener("load", init);

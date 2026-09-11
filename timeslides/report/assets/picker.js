@@ -18,6 +18,13 @@ const S = {
   editing: null,     /* group id when editing an existing group */
   name: "",
   run: null,         /* the job we are polling */
+  /* Incremented every time a render is started. Every request that can outlive
+   * its own click carries the value that was current when it began, and a
+   * reply whose token has moved on is dropped. Without it, starting a second
+   * render while the first was still polling left both chains running: each
+   * reset the shared timer, one was orphaned, and the finished report could be
+   * opened twice. */
+  runToken: 0,
   reportUrl: null,
   poll: null
 };
@@ -50,10 +57,12 @@ async function api(path, options) {
   let body = null;
   try {
     body = await res.json();
-  } catch (err) {
+  } catch {
     /* A 204, an empty body, or an error page from something sitting in front
      * of the application. The caller falls back to the status code, which is
-     * the useful information in all three cases. */
+     * the useful information in all three cases. Bound with no parameter at
+     * all: naming an error and never reading it is the same oversight the
+     * empty-catch rule objects to. */
     body = null;
   }
   if (!res.ok) {
@@ -205,7 +214,7 @@ function denyStorage(err) {
     console.warn(
       "Timeslides: this browser will not let the group selection be " +
       "remembered, so it resets on reload. Everything else works.",
-      err && err.message);
+      err?.message);
   }
   return null;
 }
@@ -233,7 +242,7 @@ function readStoredSelection() {
      * as a denial would stop every later write and leave the bad value in
      * place for good. Discard it and let the next write replace it. */
     console.warn("Timeslides: the remembered group selection could not be "
-                 + "read and has been discarded.", err && err.message);
+                 + "read and has been discarded.", err?.message);
     return null;
   }
 }
@@ -454,22 +463,27 @@ async function startRun() {
   if (!body.sources.length) return show("runmsg", "Select at least one provider.", true);
   el("runbtn").disabled = true;
   show("runmsg", "");
+  const mine = ++S.runToken;
   try {
     const job = await api("/api/runs", { method: "POST", body: JSON.stringify(body) });
+    if (mine !== S.runToken) return;      /* superseded while the POST was out */
     S.run = job;
     if (job.joined) show("runmsg", "Joined a render already in progress.");
-    pollRun();
+    pollRun(mine);
   } catch (err) {
+    if (mine !== S.runToken) return;
     show("runmsg", err.message, true);
     el("runbtn").disabled = false;
   }
 }
 
-function pollRun() {
+function pollRun(token) {
   if (S.poll) clearTimeout(S.poll);
   const tick = async () => {
+    if (token !== S.runToken) return;     /* a newer render owns the page now */
     try {
       const job = await api(`/api/runs/${encodeURIComponent(S.run.id)}`);
+      if (token !== S.runToken) return;
       S.run = job;
       drawRun();
       if (job.status === "queued" || job.status === "running") {
@@ -479,6 +493,7 @@ function pollRun() {
         if (job.status === "done") openReport(job.reportUrl);
       }
     } catch (err) {
+      if (token !== S.runToken) return;
       show("runmsg", `Lost track of the run: ${err.message}`, true);
       el("runbtn").disabled = false;
     }

@@ -92,6 +92,9 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 .mk-cross{background:currentColor;clip-path:polygon(38% 0,62% 0,62% 38%,100% 38%,100% 62%,62% 62%,62% 100%,38% 100%,38% 62%,0 62%,0 38%,38% 38%)}
 .mk-ex{background:currentColor;clip-path:polygon(18% 0,50% 32%,82% 0,100% 18%,68% 50%,100% 82%,82% 100%,50% 68%,18% 100%,0 82%,32% 50%,0 18%)}
 .card.nodata{opacity:.5}
+/* !important: the per-object colour is set inline on .big by report.js, and an
+   inline style beats any selector. An object with no data in the window must
+   read as absent rather than wearing its colour as though it were plotted. */
 .card.nodata .big{color:var(--dim)!important}
 .legendkey{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);
   padding:2px 2px 0}
@@ -155,6 +158,9 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 @media (max-width:900px){ main{grid-template-columns:1fr} .rail{border-right:0;border-bottom:1px solid var(--line)}
   body{overflow:auto} .app{height:auto} .plotwrap{height:70vh}
   .panels{min-height:auto} .panel.active{position:static} }
+/* !important: a viewer who has asked for less motion is entitled to have that
+   honoured whatever any other rule says, which is the one case where winning
+   every specificity contest is the point. */
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 
 /* Data quality. Shown only when ingestion found something, so it must read as

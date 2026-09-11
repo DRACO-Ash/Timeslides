@@ -407,8 +407,10 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python -m pytest
 TIMESLIDES_DEMO=1 .venv/bin/python -m timeslides --out /tmp/check.html
 
-# The quality gate's rule families, locally
-.venv/bin/ruff check timeslides tests app.py
+# The quality gate's rule families, locally. See CODE-QUALITY.md for the
+# register of findings behind each of these and which layer enforces it.
+.venv/bin/ruff check .                          # Python
+npx eslint timeslides/report/assets             # JavaScript, if eslint is present
 node --check timeslides/report/assets/report.js
 node --check timeslides/report/assets/picker.js
 
@@ -418,6 +420,14 @@ node --check timeslides/report/assets/picker.js
 pip install -r requirements.txt
 pytest --cov --cov-report=xml:coverage.xml
 ```
+
+**The gate's blind spot is where every late finding landed.** ruff covered
+Python from the start and says in its own header that it cannot see the CSS or
+the JavaScript; every finding after that file was written was CSS, JavaScript
+or a rule specific to this application. `tests/test_code_standards.py` closes
+that gap and, unlike ruff and eslint, is pure standard library, so it runs in
+the platform's test stage exactly as it runs locally. `CODE-QUALITY.md` is the
+register: what was found, why it matters, and which layer now stops it.
 
 **A skipped browser suite is not a passed one.** The Playwright fixture skips
 when no usable Chromium is present, so a build agent without one reports

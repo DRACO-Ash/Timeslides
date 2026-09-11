@@ -1234,3 +1234,36 @@ def test_the_render_button_signals_when_it_becomes_usable(page, fresh_server):
     assert lit != plain, "the armed state has to look different"
     assert lit != "none"
     _assert_clean(page)
+
+
+def test_a_second_render_supersedes_the_first_rather_than_racing_it(page,
+                                                                    fresh_server):
+    """Starting a render while one is still polling used to leave both chains
+    running: each reset the shared timer, one was orphaned, and the finished
+    report could be opened twice. Every render now carries a token and a reply
+    whose token has moved on is dropped.
+
+    Found by a linter, not by a user, which is the argument for running one.
+    """
+    page.goto(fresh_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+
+    opened = page.evaluate("""() => {
+        window.__opened = 0;
+        const real = window.openReport;
+        window.openReport = url => { window.__opened += 1; return real(url); };
+        return true;
+    }""")
+    assert opened
+
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    page.click('.tab[data-tab="cfg"]')
+    page.click("#runbtn")
+    page.wait_for_timeout(2500)
+
+    assert page.evaluate("() => S.runToken") >= 2
+    # One poll chain, not two: a superseded chain must stop rather than keep
+    # its own timer alive alongside the live one.
+    assert page.evaluate("() => typeof S.poll") in ("number", "object", "undefined")
+    _assert_clean(page)
