@@ -110,21 +110,28 @@
         letter-spacing:.03em; min-width:210px}
 .btn.go:disabled{background:var(--panel-solid); color:var(--dim);
                  border:1px solid var(--line-strong); opacity:1}
-.btn.go.armed{box-shadow:0 0 0 3px rgba(56,95,175,.28),
-                         0 6px 20px rgba(56,95,175,.30)}
-.btn.go.armed:hover{box-shadow:0 0 0 3px rgba(56,95,175,.40),
-                               0 6px 22px rgba(56,95,175,.40)}
-/* One pulse when it becomes usable, not a permanent animation: something that
-   moves forever in the corner of the eye is fatiguing and stops being a
-   signal. Skipped entirely where the viewer has asked for less motion. */
+/* One pulse when the button becomes usable, not a permanent animation:
+   something that moves forever in the corner of the eye is fatiguing and stops
+   being a signal. */
 @keyframes armpulse{
   0%{box-shadow:0 0 0 0 rgba(56,95,175,.55), 0 6px 20px rgba(56,95,175,.30)}
   70%{box-shadow:0 0 0 12px rgba(56,95,175,0), 0 6px 20px rgba(56,95,175,.30)}
   100%{box-shadow:0 0 0 3px rgba(56,95,175,.28), 0 6px 20px rgba(56,95,175,.30)}
 }
-.btn.go.armed{animation:armpulse .9s ease-out 1}
-@media (prefers-reduced-motion:reduce){
-  .btn.go.armed{animation:none}
+/* The resting lit state. This was written as two rules with the same selector,
+   one for the shadow and one for the animation, which is a duplicate: the
+   later one silently governs any property they share, and the pair worked only
+   because they happened not to overlap. */
+.btn.go.armed{box-shadow:0 0 0 3px rgba(56,95,175,.28),
+                         0 6px 20px rgba(56,95,175,.30)}
+.btn.go.armed:hover{box-shadow:0 0 0 3px rgba(56,95,175,.40),
+                               0 6px 22px rgba(56,95,175,.40)}
+/* The pulse is added for viewers who have not asked for less motion, rather
+   than added for everyone and then taken away again. Same result, one fewer
+   rule, and it fails safe: a browser that does not understand the query gets
+   no animation rather than an unstoppable one. */
+@media (prefers-reduced-motion:no-preference){
+  .btn.go.armed{animation:armpulse .9s ease-out 1}
 }
 
 .ctrls{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end}

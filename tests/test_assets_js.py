@@ -41,6 +41,15 @@ ASSETS = Path(__file__).resolve().parent.parent / "timeslides" / "report" / "ass
 STUB = """
 globalThis.__handlers = {};
 globalThis.__payloads = %s;
+/* Recorded rather than discarded: a warning the code emits is part of what it
+   does, and a test that asserts the fallback should be able to assert that the
+   operator was told why. */
+globalThis.__warnings = [];
+globalThis.console = {
+  log: function () {},
+  warn: function () { globalThis.__warnings.push([].slice.call(arguments)); },
+  error: function () {}
+};
 globalThis.document = {
   getElementById: function (id) {
     if (globalThis.__payloads[id] === undefined) return null;
@@ -437,7 +446,46 @@ def test_a_storage_that_refuses_does_not_break_the_selection(picker):
     assert _call(picker, "[...S.selected]") == ["b"]
 
 
+def test_a_refused_store_is_said_once_and_then_left_alone(picker):
+    """Recorded rather than swallowed, and only once: repeating it on every
+    redraw would bury the message in its own noise."""
+    picker.eval("globalThis.__storageThrows = true;")
+    _load_groups(picker, ["a", "b"])
+    for _ in range(5):
+        picker.eval("toggleGroup('a', false); toggleGroup('a', true);")
+    warnings = _call(picker, "__warnings.map(w => w[0])")
+    denials = [w for w in warnings if "will not let" in w]
+    assert len(denials) == 1, warnings
+    assert "resets on reload" in denials[0]
+    assert "Everything else works" in denials[0]
+
+
 def test_a_corrupt_stored_selection_falls_back_rather_than_throwing(picker):
     picker.eval('window.localStorage.setItem("timeslides.selectedGroups",'
                 ' "not json");')
     assert _load_groups(picker, ["a", "b"]) == ["a", "b"]
+
+
+@pytest.mark.parametrize("stored", ['"not json"', '"{\\"a\\":1}"', '"42"',
+                                    '"null"'])
+def test_a_stored_value_of_the_wrong_shape_is_discarded(picker, stored):
+    picker.eval(f'window.localStorage.setItem("timeslides.selectedGroups", {stored});')
+    assert _load_groups(picker, ["a", "b"]) == ["a", "b"]
+
+
+def test_an_unreadable_stored_value_is_replaced_not_treated_as_a_denial(picker):
+    """The distinction the two catches exist for. An unreadable value means the
+    store works and its contents are simply not what this code wrote. Treating
+    that as a refusal would stop every later write and leave the bad value in
+    place for good, so the selection could never be remembered again."""
+    picker.eval('window.localStorage.setItem("timeslides.selectedGroups",'
+                ' "not json");')
+    _load_groups(picker, ["a", "b"])
+    picker.eval("toggleGroup('a', false);")
+    stored = _call(
+        picker, 'JSON.parse(window.localStorage.getItem("timeslides.selectedGroups"))')
+    assert stored == ["b"], "the bad value must have been overwritten"
+    warnings = _call(picker, "__warnings.map(w => w[0])")
+    assert any("could not be read" in w for w in warnings), warnings
+    assert not any("will not let" in w for w in warnings), \
+        "a bad value is not a refusal to store"

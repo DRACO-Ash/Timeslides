@@ -48,7 +48,14 @@ async function api(path, options) {
     ...options
   });
   let body = null;
-  try { body = await res.json(); } catch (_) { /* empty or non-JSON */ }
+  try {
+    body = await res.json();
+  } catch (err) {
+    /* A 204, an empty body, or an error page from something sitting in front
+     * of the application. The caller falls back to the status code, which is
+     * the useful information in all three cases. */
+    body = null;
+  }
   if (!res.ok) {
     const detail = (body && (body.detail || body.error)) || `HTTP ${res.status}`;
     throw new Error(detail);
@@ -184,22 +191,60 @@ function nameFor(group, satNo) {
  * again on every visit. */
 const SEL_KEY = "timeslides.selectedGroups";
 
+/* Set once if the browser refuses storage outright: a private window, blocked
+ * site data, or a policy that throws on the property itself. Remembering the
+ * choice is a convenience and never a requirement, so the page carries on
+ * without it, but the refusal is recorded rather than swallowed: it is said
+ * once, and the remaining calls stop trying instead of throwing on every
+ * redraw for the rest of the session. */
+let storageDenied = null;
+
+function denyStorage(err) {
+  if (!storageDenied) {
+    storageDenied = err;
+    console.warn(
+      "Timeslides: this browser will not let the group selection be " +
+      "remembered, so it resets on reload. Everything else works.",
+      err && err.message);
+  }
+  return null;
+}
+
 function readStoredSelection() {
-  /* Storage is allowed to fail outright: a private window, blocked site data,
-   * or a browser that throws on access. A remembered selection is a
-   * convenience, never a requirement, so any failure falls through to "all". */
+  if (storageDenied) return null;
+  let raw;
   try {
-    const raw = window.localStorage.getItem(SEL_KEY);
-    return raw ? new Set(JSON.parse(raw)) : null;
-  } catch (_) {
+    raw = window.localStorage.getItem(SEL_KEY);
+  } catch (err) {
+    return denyStorage(err);
+  }
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    /* Only an array is what this code writes. The check is not belt and
+     * braces: JSON "null" parses without throwing and new Set(null) is a legal
+     * empty set, so without it a stored null would silently mean "nothing
+     * selected" and leave the render button dead with nothing said. */
+    if (!Array.isArray(parsed)) throw new TypeError("expected an array");
+    return new Set(parsed);
+  } catch (err) {
+    /* A different failure, and conflating the two would be a bug: the store
+     * works, its contents are simply not what this code wrote. Treating that
+     * as a denial would stop every later write and leave the bad value in
+     * place for good. Discard it and let the next write replace it. */
+    console.warn("Timeslides: the remembered group selection could not be "
+                 + "read and has been discarded.", err && err.message);
     return null;
   }
 }
 
 function storeSelection() {
+  if (storageDenied) return;
   try {
     window.localStorage.setItem(SEL_KEY, JSON.stringify([...S.selected]));
-  } catch (_) { /* see readStoredSelection */ }
+  } catch (err) {
+    denyStorage(err);
+  }
 }
 
 function reconcileSelection() {
