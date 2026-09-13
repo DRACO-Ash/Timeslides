@@ -282,7 +282,7 @@ rootfs missing one library builds cleanly and dies on its first request, which
 is a worse outcome than a failing scan, so the build is made to prove itself
 rather than trusted to be right.
 
-### Verified here, and not
+### Verified here: the image was built, run and inventoried
 
 Python 3.13 was not adopted on the strength of a version number. The whole
 runtime stack was installed on it (every dependency resolves to a cp313 or
@@ -290,67 +290,110 @@ abi3 wheel) and the application served a full render of 4,545,975 bytes. The
 stdlib extension removals were tested by blocking those imports and running
 the application, the physics and the group store without them.
 
-`build-rootfs.sh` was run for real against a staged tree. It found two defects
-in itself that reading it would not have:
+The image has since been **built and run in this session**. Docker Hub's blob
+delivery network is denied by this environment's egress policy, but the Google
+mirror of the same registry is not, so `mirror.gcr.io/library/python:3.13.15-slim`
+was pulled and tagged locally as the `docker.io` reference the Dockerfile uses.
+Two substitutions were needed and both are recorded here rather than committed:
+`apt-get upgrade` was skipped, because `deb.debian.org` answers 403 on both
+HTTP and HTTPS from here, and the build stage was given this sandbox's CA
+bundle, because pip's TLS to PyPI is intercepted inside the build container.
+Everything else is the committed Dockerfile.
 
-● The library closure copied numpy's bundled libraries **into the rootfs it was
-  building**, because `ldd` reports a path relative to the copy it inspects and
-  `$ORIGIN` resolved inside `/rootfs`. The result was a 31 MB `/rootfs/rootfs`.
-  The image would have built and run, so nothing else would have noticed. The
-  script now refuses to finish if that directory exists.
-● pip survived in the virtualenv. The scan raises an advisory per pip version,
-  and an image that installs nothing needs none of them.
+**Measured on the built image:**
 
-After the fixes: 15 shared libraries, 6,088 files, 238 MB, no dpkg database,
-no shell, no setuid or setgid anywhere, and the chroot verification passing.
+| | |
+|---|---|
+| Serves `GET /` | 200, three seconds after start, as uid 1000 |
+| Full render in the container | 4,545,975 bytes, byte-identical to the local render |
+| Setuid or setgid entries | **0** |
+| Executables in `bin`, `sbin`, `usr/bin`, `usr/sbin` | **0**: no shell, no perl, no apt, no coreutils |
+| Distribution shared libraries | 14 |
+| Python distributions | 26, audited with `pip-audit`: **no known vulnerabilities** |
+| Files, uncompressed size | 5,575 files, 271 MB on disk, 55 MB compressed |
+| Layers above scratch | 1 |
 
-**Not verified: the image itself.** There is no Docker daemon in this
-environment, so it has not been built or scanned. What can be said is what each
-change removes and why; what cannot be said is the number the scan will report.
-The `apt-get upgrade` result in particular depends on what the Debian security
-repository holds on the day the pipeline runs.
+**Three defects were found by building it, that reading it did not.**
 
-## Container build: not verified in this session
+● **Exit 127.** `/opt/venv/bin/python` points at `/usr/local/bin/python`, which
+  in the base image is a symlink to `python3`, which is a symlink to
+  `python3.13`. The script copied only `python3.13`, so the venv's entry point
+  dangled, the chroot verification died with "No such file or directory", and
+  the image's `CMD` -- which names that same absolute path -- would have failed
+  identically on every pod start. All three names are now copied as links.
+● **A swallowed install.** `|| true` sat on the end of the build stage's whole
+  `&&` chain rather than on the `pip uninstall` it was meant to tolerate. With
+  no route to the package index the dependency install failed, the stage went
+  green, and the virtualenv was empty. The only thing that noticed was the
+  chroot verification three stages later. `pip uninstall` already exits 0 for a
+  package that is not installed, so the tolerance was never needed; it is gone.
+● **A diverted path.** `dpkg -S` prints `diversion by libc6 from: ...` ahead of
+  the real ownership line, and cutting at the first colon produced a package
+  named `diversionbylibc6from`.
 
-**The image was not built.** Docker is available here but this session's egress
-policy denies Docker Hub's blob content delivery network
-(`production.cloudfront.docker.com` answers 403 to the manifest and layer
-fetches, while `auth.docker.io` and `registry-1.docker.io` respond normally).
-The `python:3.11-slim-bookworm` base image therefore cannot be pulled, and per
-the proxy guidance a policy denial is reported rather than routed around.
+An earlier trial run of the script alone, against a staged tree, had already
+found two more: the library closure copying numpy's bundled libraries **into
+the rootfs it was building** (`ldd` reports paths relative to the copy it
+inspects, so `$ORIGIN` resolved inside `/rootfs`, producing a 31 MB
+`/rootfs/rootfs`), and pip surviving in the virtualenv.
 
-What that leaves unverified: the `containerize` and `container-scan` stages,
-which is to say the flatten actually collapsing to one layer, the setuid strip
-assertion firing, and the image passing the policy scan. The Dockerfile parses
-(BuildKit loaded the build definition before failing on the pull) and every
-runtime property the image is meant to deliver is verified separately by the
-runtime contract check below, run as uid 1000 against the same entry point.
+### Minimal is not the same as invisible
 
-**Do this before the first upload:** build the image on a host with registry
-access and confirm the prep stage's setuid assertion passes, the final image
-reports `USER 1000:1000`, and `docker history` shows a single layer above
-scratch.
+Dropping the Debian userland drops `/var/lib/dpkg` with it, and a scanner that
+cannot find a package database reports **no operating-system packages at all**.
+That is not the same as having none: fourteen Debian libraries remain, libc6
+and openssl among them, and they carry whatever they carry. An image that
+passes because the scanner has been blinded is worse than one that fails
+honestly, and it is not something to put in front of a security manager.
 
-The base image is `registry.bluestaq.com/container/library/python:3.12-slim`,
-the internal mirror at the tag the platform's own runners pull. A `docker.io`
-reference will not resolve on builders in this environment. Note also that with
-`requirements.txt` present the App Store auto-detects the python template and
-may build the image from that template rather than from this Dockerfile, in
-which case this file is the record of what the image must satisfy rather than
-the thing that produces it.
+So the packages whose files actually survive are declared, in the
+`/var/lib/dpkg/status.d` layout that distroless images use and that Syft, Grype
+and Trivy all read, together with `/etc/os-release` so an advisory has a
+release to match against. Nine packages are declared, with their real versions:
+
+    libbz2-1.0  libc6  libffi8  libgcc-s1  liblzma5
+    libssl3t64  libstdc++6  libzstd1  zlib1g
+
+Metadata only: there is no dpkg or apt binary in the image and nothing in it
+can install anything. The build fails if `status.d/libc6` is missing, because
+an empty declaration would produce exactly the falsely clean scan it exists to
+prevent.
+
+**What this means for the scan.** The Python half is clean and measured. The
+nine distribution packages are visible to the scanner by design, and whether
+they pass depends on `apt-get upgrade` reaching a current Debian security
+repository during the pipeline's build -- which could not be exercised here.
+That is the one number that cannot be given in advance.
 
 ## Container image policy
 
 The image is flattened. A `chmod -s` in a later layer does not remove a bit an
 earlier layer set, because the policy reads layer blobs and history, so the
 build strips the rootfs in a prep stage and then collapses it with a single
-`COPY --from=prep / /` onto `FROM scratch`. The prep stage also fails the build
-itself if any setuid or setgid file survives the strip, so a policy problem
-surfaces with a readable message at build time instead of at container-scan.
+`COPY --from=prep /rootfs /` onto `FROM scratch`. The prep stage also fails the
+build itself if any setuid or setgid file **or directory** survives the strip,
+so a policy problem surfaces with a readable message at build time instead of
+at container-scan. The directory case is not hypothetical: the scan reported
+SGID on `/var/mail`, mode 0o42775, and the check that should have caught it
+only looked at `-type f`.
 
 pip, setuptools and wheel are removed after the dependencies are installed, and
 the runtime carries the interpreter and the dependencies only: no build
-toolchain, no package manager, no shell utilities that were setuid.
+toolchain, no package manager, no shell.
+
+**The base image reference.** `docker.io/library/python:3.13.15-slim`, fully
+qualified, and deliberately not the internal registry by name. The pipeline
+writes a mirror rule that rewrites the `docker.io` prefix to Harbor, so a
+`docker.io` reference is redirected and never leaves the estate, while an
+explicit `registry.bluestaq.com` reference bypasses that rule, is resolved
+directly, and fails with "no such host" (exit 125). An earlier revision of this
+file recommended the opposite; it was wrong.
+
+Note also that with `requirements.txt` present the App Store auto-detects the
+python template and may build the image from that template rather than from
+this Dockerfile, in which case this file is the record of what the image must
+satisfy rather than the thing that produces it.
+
 
 ## Quality gate
 

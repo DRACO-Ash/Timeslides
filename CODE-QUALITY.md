@@ -118,12 +118,30 @@ being in the image. The first shaped the `apt-get upgrade`; the second shaped
 the whole minimal-rootfs approach, including removing stdlib extension modules
 so the libraries behind them need not ship.
 
+| A scan that sees no packages because the database was dropped | declare the packages that really ship, in `status.d` | `test_the_image_declares_its_packages_to_the_scanner` |
+
+The distinction that matters most here is not a rule about code at all.
+**Minimal is not the same as invisible.** Removing the Debian userland removes
+the package database with it, and a scanner that cannot find one reports no
+operating-system packages: a clean result that means "could not see" rather
+than "nothing to see", which is the same fail-open defect as a test that passes
+when it could not verify. Fourteen Debian libraries genuinely remain, so the
+nine packages that own them are declared to the scanner on purpose.
+
 **A minimal rootfs missing one library builds cleanly and dies on its first
 request**, which is worse than a failing scan. So the build chroots into what
 it assembled and imports the whole application, runs the physics, and asserts
-the removed pieces are genuinely removed. Running that script for real found
-two defects in it that reading it did not: the library closure copying into
-the rootfs it was building, and pip surviving in the virtualenv.
+the removed pieces are genuinely removed.
+
+**Reading a build script is not building it.** Running the script alone found
+two defects: the library closure copying into the rootfs it was building, and
+pip surviving in the virtualenv. Building the image then found three more, none
+of them visible on the page: the interpreter symlink chain that left the entry
+point dangling (exit 127 on every start), a `|| true` that swallowed a failed
+dependency install and produced an empty virtualenv behind a green build, and
+a `dpkg -S` diversion line parsed as a package name. The general rule: a build
+step is not verified until it has been run, and `|| true` on a chain rather
+than on one command is how a failure becomes a green build.
 
 ## The rule about the rules
 

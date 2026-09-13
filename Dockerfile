@@ -47,10 +47,17 @@ WORKDIR /w
 COPY requirements-runtime.txt .
 # Built into a virtualenv so the runtime carries the interpreter and the
 # dependencies and nothing else: no pip, no setuptools, no build toolchain.
+#
+# No `|| true` on the end of this chain. It was there to tolerate a package
+# that is not installed, which `pip uninstall` already tolerates: it warns,
+# skips and exits 0. What it actually did was swallow a failed dependency
+# install. A trial build with no route to the index produced an empty
+# virtualenv, a green build stage, and an image that could not import numpy.
+# The only thing that noticed was the chroot verification three stages later.
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/venv/bin/pip install --no-cache-dir -r requirements-runtime.txt \
- && /opt/venv/bin/pip uninstall -y pip setuptools wheel || true
+ && /opt/venv/bin/pip uninstall -y pip setuptools wheel
 
 # --------------------------------------------------------------------------- #
 #  Stage 2: security updates, then a rootfs of only what is needed

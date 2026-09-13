@@ -12,8 +12,15 @@ itself at build time by chrooting into the result and importing the whole
 application, which is the real guarantee: a rootfs missing one library builds
 cleanly and dies on its first request, and that is worse than a failing scan.
 
-These tests cover what can be checked without a container runtime, which is
-this environment's limit. They are not a substitute for the build.
+These tests cover what can be checked without a container runtime. They are
+not a substitute for the build, and they were not enough: the image has since
+been built and run here, and doing so found two defects no reading of the
+script would have caught. The virtualenv's bin/python points at
+/usr/local/bin/python, a symlink the script did not copy, so the chroot
+verification died with exit 127 and the image's CMD would have done the same
+on every pod start. And a `|| true` on the end of the build stage's install
+chain swallowed a failed dependency install outright, leaving an empty
+virtualenv and a green build.
 """
 
 from __future__ import annotations
@@ -95,8 +102,8 @@ def test_the_base_image_still_goes_through_the_registry_mirror(dockerfile):
 
 
 @pytest.mark.parametrize("unwanted", [
-    "usr/bin/perl", "usr/bin/apt", "usr/bin/dpkg", "var/lib/dpkg",
-    "bin/login", "usr/bin/passwd",
+    "usr/bin/perl", "usr/bin/apt", "usr/bin/dpkg", "var/lib/dpkg/status",
+    "bin/login", "usr/bin/passwd", "bin/sh",
 ])
 def test_the_script_refuses_to_ship_the_packages_that_caused_the_findings(
         script, unwanted):
@@ -168,3 +175,82 @@ def test_the_runtime_user_is_numeric(dockerfile):
     root. The rootfs carries an /etc/passwd anyway, but the image must not
     depend on it being readable."""
     assert "USER 1000:1000" in dockerfile
+
+
+# --------------------------------------------------------------------------- #
+#  What the trial build found
+#
+#  Everything below is a regression test for a defect that survived review of
+#  the script and only appeared when the image was built for real.
+# --------------------------------------------------------------------------- #
+def test_the_interpreter_symlinks_are_copied_not_just_the_binary(script):
+    """Exit 127, and the reason the first real build failed.
+
+    /opt/venv/bin/python points at /usr/local/bin/python, which in the base
+    image is a symlink to python3, which is a symlink to python3.13. Copying
+    only python3.13 leaves the venv's entry point dangling: chroot reports "No
+    such file or directory", and the image's CMD, which names that same
+    absolute path, would fail identically on every start.
+    """
+    assert ('for exe in "$BASE"/bin/python "$BASE"/bin/python3 '
+            '"$BASE/bin/python$VER"; do') in script
+    # Copied as links, so -a rather than -aL: three names, one binary.
+    assert 'cp -a "$exe" "$ROOT$BASE/bin/"' in script
+
+
+def test_the_verification_checks_the_entry_point_resolves(script):
+    """The check for the above, inside the script, where it fails the build."""
+    assert '"/opt/venv/bin/python"' in script
+    assert "the CMD entry point does not resolve" in script
+
+
+def test_the_build_stage_does_not_swallow_a_failed_install(dockerfile):
+    """A trial build with no route to the package index produced an empty
+    virtualenv and a green build stage, because `|| true` was on the end of the
+    whole chain rather than on the uninstall it was meant to tolerate. pip
+    uninstall already exits 0 for a package that is not installed, so the
+    tolerance was never needed.
+    """
+    install = [ln for ln in dockerfile.splitlines() if "pip install" in ln
+               or "pip uninstall" in ln]
+    assert install, "the build stage no longer installs anything"
+    for line in install:
+        assert "|| true" not in line, line
+
+
+def test_the_image_declares_its_packages_to_the_scanner(script):
+    """Minimal is not the same as invisible.
+
+    Dropping the Debian userland drops /var/lib/dpkg with it, and a scanner
+    that cannot find a package database reports no operating-system packages at
+    all. Fourteen Debian libraries remain, libc6 and openssl among them. An
+    image that passes because the scanner was blinded is worse than one that
+    fails honestly, so the packages that really are present are declared in the
+    status.d layout that Syft, Grype and Trivy read.
+    """
+    assert "status.d" in script
+    assert "dpkg-query -s" in script
+    # And the distribution, or there is nothing to match an advisory against.
+    assert "os-release" in script
+
+
+def test_the_declaration_is_checked_rather_than_assumed(script):
+    """An empty status.d would produce exactly the clean scan it is meant to
+    prevent, so the script fails the build if the C library every binary in the
+    image links against is not declared."""
+    assert "status.d/libc6" in script
+    assert "not declared to the scanner" in script
+
+
+def test_the_package_scan_handles_a_diverted_path(script):
+    """dpkg -S prints "diversion by libc6 from: ..." ahead of the real
+    ownership line for a diverted path. Cutting at the first colon turned that
+    into a package named "diversionbylibc6from", and the build failed on it."""
+    assert "grep -v '^diversion '" in script
+
+
+def test_the_verification_confirms_pip_is_not_in_the_image(script):
+    """The scan raises an advisory per pip version it finds, and an image that
+    installs nothing has no use for it. Removed in two places, so the check is
+    what says one of them worked."""
+    assert "pip is importable in the image" in script

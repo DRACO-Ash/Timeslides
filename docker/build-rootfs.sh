@@ -55,7 +55,18 @@ rm -rf "$ROOT/opt/venv/lib"/python*/site-packages/pip \
        "$ROOT/opt/venv/lib"/python*/site-packages/wheel \
        "$ROOT/opt/venv/lib"/python*/site-packages/wheel-*.dist-info \
        "$ROOT/opt/venv/bin/pip" "$ROOT/opt/venv/bin/pip3"* 2>/dev/null || true
-cp -a "$BASE/bin/python$VER" "$ROOT$BASE/bin/"
+# The interpreter, and the two symlinks in front of it.
+#
+# The virtualenv's own bin/python points at /usr/local/bin/python, which in the
+# base image is a relative symlink to python3, which points at python3.13. A
+# first version copied only python3.13, so /opt/venv/bin/python dangled: the
+# chroot verification failed with "No such file or directory" and exit 127,
+# and the image's CMD would have failed the same way on every pod start. The
+# links are copied as links, which is why -a and not -aL.
+for exe in "$BASE"/bin/python "$BASE"/bin/python3 "$BASE/bin/python$VER"; do
+    [ -e "$exe" ] || [ -L "$exe" ] || continue
+    cp -a "$exe" "$ROOT$BASE/bin/"
+done
 cp -a "$BASE/lib/python$VER" "$ROOT$BASE/lib/"
 for lib in "$BASE"/lib/libpython*; do
     [ -e "$lib" ] && cp -a "$lib" "$ROOT$BASE/lib/"
@@ -140,6 +151,71 @@ done
 [ -e /etc/ld.so.cache ] && { mkdir -p "$ROOT/etc"; cp -a /etc/ld.so.cache "$ROOT/etc/"; }
 
 # --------------------------------------------------------------------------- #
+#  Tell the scanner what is still in here
+#
+#  Dropping the whole Debian userland removes the package database with it, and
+#  a scanner that cannot find /var/lib/dpkg reports no operating-system
+#  packages at all. That is not the same thing as having none: fourteen Debian
+#  shared libraries remain, libc6 and openssl among them, and they carry
+#  whatever they carry. An image that is clean because the scanner has been
+#  blinded is worse than one that fails honestly, and it is not something to
+#  hand a security manager.
+#
+#  So the packages whose files actually survive are declared, in the
+#  /var/lib/dpkg/status.d layout that distroless images use and that Syft,
+#  Grype and Trivy all read. The result is an image that is both minimal and
+#  assessable: the scan sees exactly the nine packages that are present, and
+#  the apt-get upgrade in the stage above is what keeps them patched.
+#
+#  This ships the metadata only. There is no dpkg or apt binary in the image
+#  and nothing can install anything.
+# --------------------------------------------------------------------------- #
+STATUSD="$ROOT/var/lib/dpkg/status.d"
+mkdir -p "$STATUSD"
+
+# Every file that came from the distribution rather than from the interpreter,
+# the virtualenv or the application: those are the ones dpkg knows about.
+owned_packages() {
+    find "$ROOT" -type f -print 2>/dev/null | sed "s|^$ROOT||" | while read -r path; do
+        case "$path" in
+            "$BASE"/*|/opt/venv/*|/app/*|/etc/*|/tmp/*|/data/*|/var/*) continue ;;
+        esac
+        # The copy sits at the path ldd reported, which may be the symlink
+        # dpkg records or the real file behind it. Ask about both.
+        # A diverted path makes dpkg -S print "diversion by libc6 from: ..."
+        # ahead of the real ownership line. Cutting at the first colon turned
+        # that into a package named "diversionbylibc6from", which dpkg-query
+        # then refused to describe. The diversion lines are dropped; the
+        # ownership line that follows them is the answer.
+        for p in "$path" "$(readlink -f "$path" 2>/dev/null || echo "$path")"; do
+            dpkg -S "$p" 2>/dev/null | grep -v '^diversion ' | cut -d: -f1
+        done
+    done | tr ',' '\n' | tr -d ' ' | grep -v '^$' | sort -u
+}
+
+packages=$(owned_packages)
+if [ -z "$packages" ]; then
+    echo "build-rootfs.sh: no owning packages found for the shipped libraries" >&2
+    exit 1
+fi
+for pkg in $packages; do
+    dpkg-query -s "$pkg" > "$STATUSD/$pkg" 2>/dev/null || {
+        echo "build-rootfs.sh: dpkg knows $pkg but will not describe it" >&2
+        exit 1
+    }
+done
+echo "  declared $(echo "$packages" | wc -w) distribution packages for the scanner"
+
+# The scanner needs the distribution and release to match an advisory to a
+# version. Without os-release it has package names and nothing to match against.
+for rel in /etc/os-release /usr/lib/os-release; do
+    if [ -e "$rel" ]; then
+        mkdir -p "$ROOT$(dirname "$rel")"
+        cp -aL "$rel" "$ROOT$rel"
+    fi
+done
+
+# --------------------------------------------------------------------------- #
 #  The few files from /etc a running process genuinely reads
 # --------------------------------------------------------------------------- #
 mkdir -p "$ROOT/etc" "$ROOT/etc/ssl"
@@ -204,6 +280,23 @@ import app
 assert app.app is not None
 # And the extensions that were removed really are gone, so this check cannot
 # quietly pass on an image that still carries them.
+# The CMD names /opt/venv/bin/python by absolute path. That is a symlink into
+# the interpreter the rootfs carries, and a dangling one produces a container
+# that exits 127 before a single line of this application runs.
+assert os.path.exists("/opt/venv/bin/python"), "the CMD entry point does not resolve"
+# pip has no business in an image that installs nothing, and the scan raises an
+# advisory per version it finds. It is removed in two places; this is the check
+# that one of them worked.
+for absent in ("/opt/venv/bin/pip", "/usr/local/bin/pip", "/usr/local/bin/pip3"):
+    if os.path.lexists(absent):
+        raise SystemExit("%s is in the image and should not be" % absent)
+try:
+    import pip
+except ImportError:
+    pass
+else:
+    raise SystemExit("pip is importable in the image")
+
 for gone in ("_sqlite3", "_uuid", "readline", "_curses"):
     try:
         __import__(gone)
@@ -227,6 +320,19 @@ VERIFY
 chroot "$ROOT" /opt/venv/bin/python /tmp/verify.py
 rm -f "$ROOT/tmp/verify.py"
 
+# The scanner's view of the image has to be the truth about the image. An
+# empty status.d, or one that omits the C library that every binary in here
+# links against, means the scan would come back clean because it could not see
+# anything rather than because there is nothing to see.
+if [ ! -e "$ROOT/var/lib/dpkg/status.d/libc6" ]; then
+    echo "build-rootfs.sh: libc6 is in the image but not declared to the scanner" >&2
+    exit 1
+fi
+if [ ! -e "$ROOT/etc/os-release" ] && [ ! -e "$ROOT/usr/lib/os-release" ]; then
+    echo "build-rootfs.sh: no os-release, so a scanner cannot match an advisory" >&2
+    exit 1
+fi
+
 # A rootfs nested inside itself means the closure copied a library by its
 # in-rootfs path. It builds and runs, so nothing else would notice.
 if [ -e "$ROOT$ROOT" ]; then
@@ -234,8 +340,10 @@ if [ -e "$ROOT$ROOT" ]; then
     exit 1
 fi
 # Nor should any of the packages this image is meant not to carry come back.
-for unwanted in usr/bin/perl usr/bin/apt usr/bin/dpkg var/lib/dpkg bin/login \
-                usr/bin/passwd bin/su usr/bin/su; do
+# var/lib/dpkg is NOT in this list any more: status.d lives there on purpose,
+# and it is metadata. What must stay out is anything that can install or run.
+for unwanted in usr/bin/perl usr/bin/apt usr/bin/dpkg var/lib/dpkg/status \
+                bin/login usr/bin/passwd bin/su usr/bin/su bin/sh usr/bin/sh; do
     if [ -e "$ROOT/$unwanted" ]; then
         echo "build-rootfs.sh: $unwanted is in the rootfs and should not be" >&2
         exit 1
