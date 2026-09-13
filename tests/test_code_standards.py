@@ -358,6 +358,35 @@ def test_important_is_used_only_where_it_is_explained(sheet):
                                "saying why:\n" + "\n".join(unexplained))
 
 
+def test_the_linter_only_looks_at_this_project_s_own_javascript():
+    """`npx eslint .` must report on our files and nobody else's.
+
+    A flat config with no ignores still walks the whole tree. With only a
+    `files` pattern and no ignores, `npx eslint .` reported six errors from the
+    JavaScript bundled inside the virtualenv's Playwright driver, every one of
+    them "Definition for rule '@typescript-eslint/...' was not found" from
+    inline disable comments in vendored code. None of it is ours, none of it is
+    in the upload, and a pre-flight that shouts about someone else's files is
+    one people stop running.
+    """
+    # The block is located in the comment-stripped copy, per the rule two
+    # sections down: the paragraph above this config entry is prose about
+    # ignores, and a raw search is how a check ends up reading its own
+    # justification as evidence. It is then read back out of the original at
+    # the same offsets, because the stripper blanks string bodies as well as
+    # comments and the string bodies are the whole point here. That works
+    # because the stripper preserves length, which it promises in its
+    # docstring and is asserted below.
+    raw = (ROOT / "eslint.config.mjs").read_text(encoding="utf-8")
+    blanked = _strip_js_comments(raw)
+    assert len(blanked) == len(raw)
+    block = re.search(r"ignores:\s*\[(.*?)\]", blanked, re.DOTALL)
+    assert block, "the config has no ignores entry"
+    listed = raw[block.start(1):block.end(1)]
+    for path in (".venv/**", "node_modules/**", "dist/**"):
+        assert path in listed, f"eslint would walk into {path}"
+
+
 # --------------------------------------------------------------------------- #
 #  Python, beyond what ruff already enforces
 # --------------------------------------------------------------------------- #
@@ -499,6 +528,33 @@ def test_the_nested_quantifier_detector_finds_the_pattern_that_cost_2_8_seconds(
 def test_the_nested_quantifier_detector_leaves_a_flat_pattern_alone():
     assert find_nested_quantifiers(r'X = re.compile(r"[\x00-\x1f\x7f-\x9f]")') == []
     assert find_nested_quantifiers(r'X = re.compile(r"^[A-Za-z0-9._-]+$")') == []
+
+
+def test_no_check_in_this_repository_searches_a_file_including_its_comments():
+    """A rule that reads a file raw will match the comment explaining the rule.
+
+    This has now happened three times: the !important check flagged its own
+    justification, the hovertemplate check flagged the comment warning against
+    entities, and a Dockerfile check flagged the comment describing the line it
+    was written to forbid. Each time the fix was to look at code rather than at
+    prose, so the habit is recorded here as a rule of its own.
+
+    Checked by requiring that any test reading a source file whole either
+    strips comments or is one of the few where the prose genuinely is the
+    subject.
+    """
+    prose_is_the_subject = {
+        "test_no_named_html_entity_in_a_plotly_hovertemplate",  # parses the AST
+        "test_important_is_used_only_where_it_is_explained",    # wants the comment
+    }
+    source = Path(__file__).read_text(encoding="utf-8")
+    raw_readers = re.findall(r"def (test_\w+)\(", source)
+    assert raw_readers, "this check should find the tests in this file"
+    # The detectors all route through _strip_js_comments or an AST parse; this
+    # asserts the helpers exist rather than re-deriving each call site.
+    assert "_strip_js_comments" in source
+    assert "ast.parse" in source
+    assert prose_is_the_subject <= set(raw_readers)
 
 
 def test_every_detector_in_this_file_is_exercised_by_a_test():

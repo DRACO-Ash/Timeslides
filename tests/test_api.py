@@ -274,11 +274,18 @@ def test_an_empty_group_list_still_means_every_group(client, app_bits):
     assert len(rendered[0].group_ids) == 3
 
 
+# A window given as `days` is measured back from now, truncated to the second.
+# Two requests in the same second therefore share a key and join; a second
+# apart they do not, because the window really has moved. These tests pin the
+# window explicitly so they test single-flight rather than the clock.
+_FIXED_WINDOW = {"start": "2026-06-24T00:00:00", "end": "2026-07-01T00:00:00"}
+
+
 def test_an_identical_run_joins_rather_than_re_rendering(client, app_bits):
     _, _, _, rendered = app_bits
-    first = client.post("/api/runs", json={"days": 7}).json()
+    first = client.post("/api/runs", json=_FIXED_WINDOW).json()
     _await_run(client, first["id"])
-    posted = client.post("/api/runs", json={"days": 7})
+    posted = client.post("/api/runs", json=_FIXED_WINDOW)
     # Assert the status before reading the body: a 429 from the rate limiter
     # would otherwise surface as a bare KeyError on "joined" and read as a
     # broken join rather than a throttled request.
@@ -287,6 +294,39 @@ def test_an_identical_run_joins_rather_than_re_rendering(client, app_bits):
     assert second["joined"] is True
     assert second["id"] == first["id"]
     assert len(rendered) == 1
+
+
+def test_two_clicks_in_the_same_moment_are_one_render(client, app_bits):
+    """The case single-flight exists for: an operator double-clicking, or two
+    of them pressing Render at once. Neither request waits for the other, so
+    this posts twice without awaiting in between."""
+    _, _, _, rendered = app_bits
+    first = client.post("/api/runs", json={"days": 7}).json()
+    second = client.post("/api/runs", json={"days": 7}).json()
+    assert second["joined"] is True
+    assert second["id"] == first["id"]
+    _await_run(client, first["id"])
+    assert len(rendered) == 1
+
+
+def test_a_window_that_has_moved_on_is_a_different_report(client, app_bits):
+    """Pinned deliberately rather than left to be discovered.
+
+    A window given as `days` ends at now, truncated to the second, so the same
+    request a second later covers a second more data and is genuinely a
+    different report. Joining it to the earlier one would serve an operator
+    stale data under the impression it was fresh.
+    """
+    _, _, _, rendered = app_bits
+    first = client.post("/api/runs", json={
+        "start": "2026-06-24T00:00:00", "end": "2026-07-01T00:00:00"}).json()
+    _await_run(client, first["id"])
+    later = client.post("/api/runs", json={
+        "start": "2026-06-24T00:00:00", "end": "2026-07-01T00:00:01"}).json()
+    assert later["joined"] is False
+    assert later["id"] != first["id"]
+    _await_run(client, later["id"])
+    assert len(rendered) == 2
 
 
 def test_rendering_an_archived_group_is_refused(client):

@@ -68,6 +68,21 @@ const local = {
 };
 
 export default [
+  /* Everything that is not this project's own JavaScript.
+   *
+   * A flat config with no ignores still walks the whole tree, so `npx eslint .`
+   * reported on the bundled JavaScript inside the virtualenv's Playwright
+   * driver: six errors, all of them "Definition for rule
+   * '@typescript-eslint/...' was not found", because those vendored files carry
+   * inline disable comments naming rules this config never loads. None of it is
+   * ours and none of it is in the upload. A linter that shouts about someone
+   * else's files is a linter people stop reading. */
+  {
+    ignores: [
+      ".venv/**", "node_modules/**", "dist/**", "reference/**",
+      "**/__pycache__/**",
+    ],
+  },
   {
     files: ["timeslides/report/assets/**/*.js"],
     languageOptions: {

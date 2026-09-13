@@ -134,7 +134,7 @@ def test_the_application_tree_is_owned_by_the_runtime_user(rootfs):
 
 def test_it_reports_success_when_the_tree_is_clean(rootfs):
     done = _run(rootfs)
-    assert "no setuid or setgid files remain" in done.stdout
+    assert "no setuid or setgid files" in done.stdout
 
 
 def test_it_is_idempotent(rootfs):
@@ -144,23 +144,27 @@ def test_it_is_idempotent(rootfs):
     assert _setuid_files(rootfs) == []
 
 
-def test_the_assertion_fires_when_a_setuid_file_survives(rootfs, monkeypatch):
+def test_the_assertion_fires_when_a_setuid_file_survives(rootfs, tmp_path):
     """The half that stops this failing open.
 
     A strip that quietly misses something would ship a policy violation and the
-    build would go green. Simulated by making the strip a no-op, leaving the
-    final scan to catch it.
+    build would go green.
+
+    Defeated by putting a no-op chmod on PATH rather than by rewriting the
+    script's own text. The earlier version matched one exact line of the
+    script, so it broke the moment that line was edited, which is a test that
+    reports on its own brittleness rather than on the code.
     """
-    stripped = SCRIPT.read_text(encoding="utf-8").replace(
-        "find \"$ROOT\" -xdev -perm /6000 -type f -exec chmod -s {} + 2>/dev/null || true",
-        ": no-op, simulating a strip that missed")
-    broken = rootfs.parent / "harden-broken.sh"
-    broken.write_text(stripped, encoding="utf-8")
-    done = subprocess.run(["sh", str(broken)], capture_output=True, text=True,
-                          env={**os.environ, "HARDEN_ROOT": f"{rootfs}/"},
-                          check=False)
+    fake_bin = tmp_path / "nochmod"
+    fake_bin.mkdir()
+    (fake_bin / "chmod").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "chmod").chmod(0o755)
+    done = subprocess.run(
+        ["sh", str(SCRIPT)], capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "HARDEN_ROOT": f"{rootfs}/"})
     assert done.returncode == 1, "the build should have failed"
-    assert "setuid/setgid files remain" in done.stderr
+    assert "setuid/setgid paths remain" in done.stderr
     assert "unrelated-setuid" in done.stderr
 
 
@@ -171,3 +175,59 @@ def test_it_survives_a_rootfs_missing_the_optional_paths(tmp_path):
     (bare / "usr/bin/true").write_text("x")
     done = _run(bare)
     assert done.returncode == 0, done.stderr
+
+
+# --------------------------------------------------------------------------- #
+#  Directories carry the bits too
+#
+#  The scan reported "SUID or SGID found set on file /var/mail. Mode: 0o42775".
+#  /var/mail is a directory, and every step of this script looked only at
+#  -type f, so it reported success while the policy reported a violation. The
+#  check that was supposed to catch it was the same shape as the bug.
+# --------------------------------------------------------------------------- #
+def test_a_setgid_directory_is_stripped(rootfs):
+    root = rootfs
+    spool = root / "var/mail"
+    spool.mkdir(parents=True)
+    spool.chmod(0o2775)
+    assert spool.stat().st_mode & stat.S_ISGID
+
+    _run(root)
+    assert not spool.stat().st_mode & stat.S_ISGID
+    assert spool.is_dir(), "stripping the bit must not remove the directory"
+
+
+def test_a_setuid_directory_is_stripped(rootfs):
+    root = rootfs
+    odd = root / "var/odd"
+    odd.mkdir(parents=True)
+    odd.chmod(0o4755)
+    _run(root)
+    assert not odd.stat().st_mode & stat.S_ISUID
+
+
+def test_the_final_assertion_sees_directories_not_only_files(rootfs, tmp_path):
+    """The regression test for the check itself.
+
+    A directory that cannot be stripped has to fail the build. With the old
+    -type f assertion this passed silently, which is how the finding reached
+    the scan.
+    """
+    root = rootfs
+    spool = root / "var/mail"
+    spool.mkdir(parents=True)
+    spool.chmod(0o2775)
+
+    # chmod -s is defeated here, so the strip cannot succeed and only the
+    # assertion stands between that and a shipped violation.
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    (fake_bin / "chmod").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "chmod").chmod(0o755)
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+           "HARDEN_ROOT": f"{root}/"}
+    result = subprocess.run(["sh", str(SCRIPT)], env=env,
+                            capture_output=True, text=True, check=False)
+    assert result.returncode != 0, result.stdout
+    assert "setuid/setgid paths remain" in result.stderr
+    assert "var/mail" in result.stderr

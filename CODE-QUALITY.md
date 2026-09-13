@@ -25,7 +25,7 @@ exactly that blind spot.** The gap was not knowledge, it was that nothing ran.
 | Layer | Covers | Runs where | Status |
 |---|---|---|---|
 | `ruff.toml` | Python | local, `ruff check .` | pre-flight |
-| `eslint.config.mjs` | JavaScript, deeply | local, `npx eslint timeslides/report/assets` | pre-flight |
+| `eslint.config.mjs` | JavaScript, deeply | local, `npx eslint .` | pre-flight |
 | `tests/test_code_standards.py` | CSS, this application's own rules, a JavaScript backstop | **everywhere, including the platform's test stage** | the guarantee |
 
 The third layer is pure standard library on purpose. The pipeline's test stage
@@ -100,7 +100,46 @@ cost a release to learn, and could not have been caught by a general linter.
 | `&middot;` appeared on screen verbatim in a tooltip | no named HTML entity in a Plotly hovertemplate; it decodes only the basic ones | `test_no_named_html_entity_in_a_plotly_hovertemplate` |
 | The data-quality band was given the shell's `.err` and `.note`; the report does not load `shell.css` | every class used in a page exists in a stylesheet that page loads | `test_every_class_the_report_uses_exists_in_the_stylesheet_it_loads` |
 
+### The container image
+
+The code-quality gate is not the only gate. The container image policy scans
+the built image and is a separate failure mode with a separate register.
+
+| Finding | Rule | Enforced by |
+|---|---|---|
+| 7 critical, 62 high, mostly in packages the app never calls | the image carries only what the application needs, computed with `ldd` | `tests/test_rootfs_script.py`, and the build's own chroot verification |
+| Criticals with an upstream fix the base image predates | the build applies the distribution's security updates | `test_the_build_applies_the_distribution_security_updates` |
+| Interpreter CVEs fixed only in a newer minor | the base tag is pinned to a patch version at or above the fixed-in versions | `test_the_base_image_is_pinned_to_a_patch_version` |
+| `SUID or SGID found set on file /var/mail` | `harden.sh` strips directories as well as files | `tests/test_harden.py` |
+
+The distinction that matters: a finding with an upstream fix is cleared by
+upgrading, and a finding without one can only be cleared by the package not
+being in the image. The first shaped the `apt-get upgrade`; the second shaped
+the whole minimal-rootfs approach, including removing stdlib extension modules
+so the libraries behind them need not ship.
+
+**A minimal rootfs missing one library builds cleanly and dies on its first
+request**, which is worse than a failing scan. So the build chroots into what
+it assembled and imports the whole application, runs the physics, and asserts
+the removed pieces are genuinely removed. Running that script for real found
+two defects in it that reading it did not: the library closure copying into
+the rootfs it was building, and pip surviving in the virtualenv.
+
 ## The rule about the rules
+
+**A check that reads a file whole will match the comment explaining the check.**
+This has now happened three times: the `!important` rule flagged its own
+justification, the hovertemplate rule flagged the comment warning against
+entities, and a Dockerfile rule flagged the comment describing the line it
+forbids. Look at code, not at prose: parse it, or strip the comments first.
+
+**A linter that reports on files that are not yours is a linter people stop
+running.** `npx eslint .` with only a `files` pattern and no `ignores` still
+walks the whole tree: it reported six errors from the JavaScript bundled inside
+the virtualenv's Playwright driver, all of them inline `eslint-disable`
+comments naming `@typescript-eslint` rules this config does not load. None of
+it is ours and none of it is in the upload. The config now ignores `.venv`,
+`node_modules`, `dist` and `reference`, and a test asserts that it does.
 
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
@@ -119,8 +158,9 @@ end-to-end suite running a real server rather than patching a module. Mapping
 # Python
 .venv/bin/ruff check .
 
-# JavaScript, if eslint is available
-npx eslint timeslides/report/assets
+# JavaScript, if eslint is available. The bare "." is safe: the config
+# ignores .venv, node_modules, dist and reference.
+npx eslint .
 
 # The guarantee, and everything else
 .venv/bin/python -m pytest tests/test_code_standards.py

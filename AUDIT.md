@@ -230,6 +230,86 @@ Proved by asserting the POST body the page actually sends, not by reading the
 report: demo mode draws fixed sample panels, so the report cannot show the
 scope of a render.
 
+## The container scan: 7 critical, 62 high, and why
+
+The image failed the container image policy on 7 critical and 62 high
+vulnerabilities. The cause was one line:
+
+    COPY --from=prep / /
+
+The final layer was the whole Debian userland. A Python web service calls none
+of perl, util-linux, login, passwd, coreutils, tar, gzip, diffutils or apt, and
+the scan counted every CVE in all of them against this application. The
+blocking criticals were five in `perl-base` and one in `libc6`/`libc-bin`.
+
+### Two different problems, needing two different answers
+
+**Findings with an upstream fix.** All seven blocking criticals had one: libc
+in `2.41-12+deb13u4`, perl-base in `5.40.1-6+deb13u1`. The base image simply
+predated them, which is the normal state of any base image more than a few
+weeks old. `apt-get update && apt-get upgrade` in the prep stage clears these.
+
+**Findings with no upstream fix.** `zlib1g`, the ncurses family, the
+util-linux family and `libacl1` carried high findings with no patched version
+at all. No amount of upgrading resolves those. The only resolution is for the
+package not to be in the image.
+
+**Findings fixed only by a newer interpreter.** CVE-2026-4224, CVE-2026-3644
+and CVE-2026-7210 are fixed in Python 3.13.13 and later. No patch to a 3.12
+image clears them.
+
+### What was done
+
+| Change | Addresses |
+|---|---|
+| Base pinned to `python:3.13.15-slim` | the three interpreter CVEs |
+| `apt-get upgrade` in the prep stage | the seven blocking criticals, and the versions of whatever remains |
+| `docker/build-rootfs.sh` assembles a minimal rootfs | everything in a package the application never calls |
+| Stdlib extensions `_uuid`, `_sqlite3`, `_dbm`, `_curses`, `readline` removed | libuuid, libsqlite3, libncursesw, libtinfo, libreadline, libdb, whose findings have no fix |
+| `harden.sh` strips directories as well as files | `SUID or SGID found set on file /var/mail. Mode: 0o42775` |
+
+The rootfs is computed, not listed. `ldd` is walked to a fixed point over the
+interpreter, the standard library, the virtualenv and the application. A list
+would go stale the moment a dependency gained an extension module, and the
+failure mode of a stale list is an image that starts and then cannot import
+numpy.
+
+**The build verifies itself.** After assembling, the script chroots into the
+result and imports every runtime module, the application, and runs the phase
+offset maths. It also asserts the removed extensions really are gone, and that
+the application still refuses to start without UDL credentials. A minimal
+rootfs missing one library builds cleanly and dies on its first request, which
+is a worse outcome than a failing scan, so the build is made to prove itself
+rather than trusted to be right.
+
+### Verified here, and not
+
+Python 3.13 was not adopted on the strength of a version number. The whole
+runtime stack was installed on it (every dependency resolves to a cp313 or
+abi3 wheel) and the application served a full render of 4,545,975 bytes. The
+stdlib extension removals were tested by blocking those imports and running
+the application, the physics and the group store without them.
+
+`build-rootfs.sh` was run for real against a staged tree. It found two defects
+in itself that reading it would not have:
+
+● The library closure copied numpy's bundled libraries **into the rootfs it was
+  building**, because `ldd` reports a path relative to the copy it inspects and
+  `$ORIGIN` resolved inside `/rootfs`. The result was a 31 MB `/rootfs/rootfs`.
+  The image would have built and run, so nothing else would have noticed. The
+  script now refuses to finish if that directory exists.
+● pip survived in the virtualenv. The scan raises an advisory per pip version,
+  and an image that installs nothing needs none of them.
+
+After the fixes: 15 shared libraries, 6,088 files, 238 MB, no dpkg database,
+no shell, no setuid or setgid anywhere, and the chroot verification passing.
+
+**Not verified: the image itself.** There is no Docker daemon in this
+environment, so it has not been built or scanned. What can be said is what each
+change removes and why; what cannot be said is the number the scan will report.
+The `apt-get upgrade` result in particular depends on what the Debian security
+repository holds on the day the pipeline runs.
+
 ## Container build: not verified in this session
 
 **The image was not built.** Docker is available here but this session's egress
@@ -410,7 +490,7 @@ TIMESLIDES_DEMO=1 .venv/bin/python -m timeslides --out /tmp/check.html
 # The quality gate's rule families, locally. See CODE-QUALITY.md for the
 # register of findings behind each of these and which layer enforces it.
 .venv/bin/ruff check .                          # Python
-npx eslint timeslides/report/assets             # JavaScript, if eslint is present
+npx eslint .                                    # JavaScript, if eslint is present
 node --check timeslides/report/assets/report.js
 node --check timeslides/report/assets/picker.js
 
