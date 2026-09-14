@@ -177,6 +177,15 @@ the pipeline run produced differently shaped reports from the same repository.
 The command line now passes a bare `--cov` and `.coveragerc` decides, with a
 test pinning that.
 
+**A test may only assert what is true of the code, not of the tree it happens
+to run in.** `test_the_two_coverage_exclusion_lists_agree` read
+`sonar-project.properties` and failed the pipeline with `FileNotFoundError`,
+because the App Store's test stage runs against the unpacked upload and that
+file is not in it. Every assertion the test made was true of the repository.
+Where a file is legitimately absent in one environment, the check skips with a
+reason that says so, and a companion check in a git work tree fails if the file
+is actually missing from the repository, so the skip cannot swallow a deletion.
+
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
 named function, shown both the offender it was written for and the lookalike it

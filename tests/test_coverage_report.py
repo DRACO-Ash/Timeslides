@@ -34,6 +34,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _in_git_worktree() -> bool:
+    """The App Store artefact is unpacked, not cloned, so git is not always
+    there to ask."""
+    done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                          cwd=ROOT, capture_output=True, text=True, check=False)
+    return done.returncode == 0
+
+
 @pytest.fixture(scope="module")
 def report(tmp_path_factory):
     """A real coverage report, generated from the real .coveragerc.
@@ -117,16 +125,59 @@ def test_the_configuration_says_so_rather_than_relying_on_a_default(report):
     assert "source = ." in text
 
 
-def test_the_two_coverage_exclusion_lists_agree():
-    """.coveragerc omits a file from the report; sonar-project.properties has
-    to exclude the same file from the metric, or SonarQube counts it as nought
-    per cent and the gate fails on a file nobody intended to measure."""
+def test_the_report_omits_what_cannot_be_measured_honestly():
+    """Two files that cannot be measured in process, and the reason for each.
+
+    Kept separate from the SonarQube half below, because .coveragerc is always
+    in the tree the tests run in and sonar-project.properties is not.
+    """
     omitted = (ROOT / ".coveragerc").read_text(encoding="utf-8")
-    sonar = (ROOT / "sonar-project.properties").read_text(encoding="utf-8")
     for path in ("app.py", "timeslides/report/assets/"):
         assert path in omitted, f"{path} is not omitted from the report"
+
+
+def test_the_two_coverage_exclusion_lists_agree():
+    """.coveragerc omits a file from the report; sonar-project.properties has
+    to exclude the same file from the metric, or the gate counts it as nought
+    per cent and fails on a file nobody intended to measure.
+
+    Skipped rather than failed when the scanner's configuration is not in the
+    tree. The App Store's test stage runs against the unpacked upload and
+    sonar-project.properties is not in it, which failed this test in the
+    pipeline while every assertion it makes was true of the repository. A test
+    that asserts a file exists in an environment that legitimately does not
+    have it is testing the environment, not the code.
+
+    The skip cannot hide a deleted file: the companion test below fails if it
+    is missing from a checkout that does have git, which is every checkout a
+    person or this repository's own CI works in.
+    """
+    sonar_config = ROOT / "sonar-project.properties"
+    if not sonar_config.exists():
+        pytest.skip(
+            "sonar-project.properties is not in this tree. The App Store's "
+            "test stage runs against the unpacked upload, which does not "
+            "carry it. If the scanner does not see it either, the coverage "
+            "exclusions in it are not being applied; see AUDIT.md.")
+    sonar = sonar_config.read_text(encoding="utf-8")
     assert "app.py" in sonar
     assert "assets" in sonar
+
+
+@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
+def test_the_scanner_configuration_ships():
+    """The other half of the skip above.
+
+    The pipeline's tree not having this file is a property of the pipeline. The
+    repository not having it would be a defect, and without this check the skip
+    above would swallow it silently.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "sonar-project.properties"],
+        cwd=ROOT, capture_output=True, text=True, check=False)
+    assert tracked.returncode == 0, (
+        "sonar-project.properties is not tracked, so it cannot reach the "
+        "scanner at all")
 
 
 def test_pytest_does_not_override_the_coverage_source():

@@ -449,6 +449,53 @@ denominator. Both path assertions were run against the old configuration and
 fail on it. The pipeline's own invocation was then simulated from a clean
 checkout: `line-rate="1"`, 1,614 of 1,614 lines, 19 files, all relative.
 
+### Open risk: the scanner may never see sonar-project.properties
+
+**Fact.** The App Store's test stage runs in `/builds/.../timeslides` and
+`sonar-project.properties` is not in it. A test that read the file failed there
+with `FileNotFoundError` while every assertion it made was true of the
+repository. The same tree is not a git work tree either, which fits: the stage
+runs against the unpacked upload, and the ingest does not carry that file.
+
+**Fact.** The file is tracked here and is in the upload; a test now asserts
+both, so this is the platform's tree, not a packaging mistake.
+
+**Inference (strong).** If the code-quality stage does not see it either, then
+none of it applies: not `sonar.coverage.exclusions`, not `sonar.sources`, not
+`sonar.python.coverage.reportPaths`. A second signal points the same way. The
+narrow exclusion `timeslides/report/assets/**` is a valid pattern and should
+have worked, and the record in this file says it "did not take effect" and the
+gate counted roughly 320 uncovered JavaScript lines. A pattern that is correct
+and has no effect is a pattern nobody read.
+
+**What it costs if true.** report.js and picker.js are analysed as source, have
+no coverage report, and therefore count as wholly uncovered:
+
+| | lines |
+|---|---|
+| Python, covered | 1,614 of 1,614 |
+| report.js | ~164 executable |
+| picker.js | ~402 executable |
+| app.py | ~23 |
+
+That puts line coverage near **73 to 74 per cent** against a threshold of 80.
+To clear 80 with the Python at 100 per cent, the uncovered total has to be 403
+lines or fewer, and the JavaScript alone is above that.
+
+**Action, and it is not ours to take.** Ask the platform team one question: is a
+repository `sonar-project.properties` honoured by the code-quality stage? If
+yes, the broadened exclusions already in it settle this. If no, they need to
+apply `sonar.coverage.exclusions=**/*.js,**/*.css,app.py` at the project level
+on the SonarQube server.
+
+**The fallback, with its cost stated.** The only lever inside this repository
+is to stop shipping the client-side code as files the scanner can see, by
+inlining it into Python string literals. That would remove it from the coverage
+denominator and from **analysis**, so the JavaScript would no longer be checked
+for violations or security either. That is a real loss and the opposite of why
+these were made separate files. It is recorded here as an option, not a
+recommendation.
+
 ### The listen address, and the one finding that may need a human
 
 The gate raised `app.py`: "Avoid binding the application to all network
