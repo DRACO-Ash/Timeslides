@@ -399,11 +399,55 @@ satisfy rather than the thing that produces it.
 
 | Gate | Status |
 |---|---|
-| Coverage at or above 80 per cent | **98 per cent**, `coverage.xml` emitted for the scan stage |
+| Coverage at or above 80 per cent | **100 per cent** of `timeslides`, 1,614 of 1,614 lines, in a report the scanner can resolve; see below |
 | Cognitive complexity at or below 15 | `main()` (156 lines, 47 branch tokens) and `build_panel` (25) decomposed into named helpers |
 | Zero open violations | Dead code removed: `build_demo_groups`, the unused `MU` constant, and the `tle_source` parameter that stopped meaning anything when Space-Track was dropped |
 | Client-side code analysed | CSS and JavaScript are asset files, not Python string literals, so the gate can see them. Not excluded from analysis |
 | Security hotspots | Every reflection site escaped server-side and client-side; JSON embedded with `<`, `>`, `&` escaped; no credential in any log, error or response |
+
+### "Line coverage: 0.0%" on a suite measured at 100 per cent
+
+The gate failed with `Line coverage: 0.0% (required: 80%)` and the advice
+attached to it was to add unit tests. There was nothing wrong with the tests.
+The report was unreadable where it was read.
+
+`.coveragerc` had `source = timeslides`, which makes coverage.py root the
+report at the package directory: it wrote
+
+    <source>/builds/.../timeslides</source>   and   filename="api.py"
+
+SonarQube resolves a coverage entry by joining a source root to a filename, so
+it was looking for an absolute path belonging to the machine that ran the
+tests. On the scanner that directory does not exist, no file matched, and every
+analysed Python line was counted as uncovered. **An unresolvable report does
+not read as "no data". It reads as zero**, which is indistinguishable from a
+project with no tests.
+
+Two settings fix it, and both are needed: `relative_files = True` stops
+absolute paths being written at all, and `source = .` roots the report at the
+project so files are named `timeslides/api.py`, which is what the scanner
+joins. The report now carries `<source></source>` and `<source>.</source>` and
+resolves wherever the scan runs.
+
+A second copy of the same decision was making it worse. `pytest.ini` passed
+`--cov=timeslides`, which **overrides** `source` in `.coveragerc`, so a local
+run and a pipeline run produced differently shaped reports from the same
+repository. The command line now passes a bare `--cov` and `.coveragerc` is the
+single source of truth.
+
+`timeslides/report/__init__.py` was added while fixing this, for a related
+reason. coverage.py only walks into a directory that is an importable package,
+so `builder.py` was measured when some test happened to import it and absent
+from the denominator when none did -- a module that vanishes from the
+measurement rather than reading as nought per cent, which is coverage going up
+because less is counted.
+
+**Verified, not assumed.** `tests/test_coverage_report.py` generates a report
+the way the pipeline does and asserts no source root is absolute, every
+filename is project-root relative, and every module in the package is in the
+denominator. Both path assertions were run against the old configuration and
+fail on it. The pipeline's own invocation was then simulated from a clean
+checkout: `line-rate="1"`, 1,614 of 1,614 lines, 19 files, all relative.
 
 ### The listen address, and the one finding that may need a human
 

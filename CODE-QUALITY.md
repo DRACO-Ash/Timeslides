@@ -159,6 +159,24 @@ comments naming `@typescript-eslint` rules this config does not load. None of
 it is ours and none of it is in the upload. The config now ignores `.venv`,
 `node_modules`, `dist` and `reference`, and a test asserts that it does.
 
+**A report the gate cannot resolve reads as zero, not as "no data".** The gate
+reported `Line coverage: 0.0%` against a suite measured at 100 per cent, and
+the pipeline's own advice was to write more tests. Nothing was wrong with the
+tests. `source = timeslides` in `.coveragerc` made coverage.py root the report
+at the package's **absolute path on the test runner**, so the scanner resolved
+no file and counted every analysed line as uncovered. The generalisation:
+anything handed from one stage to another has to be checked in the shape the
+receiving stage will read it, not the shape that looks right where it was
+made. `tests/test_coverage_report.py` now generates a report and asserts the
+paths, and both assertions were confirmed to fail against the old
+configuration.
+
+**Two places configuring the same thing will disagree.** `--cov=timeslides` in
+`pytest.ini` silently overrode `source` in `.coveragerc`, so the local run and
+the pipeline run produced differently shaped reports from the same repository.
+The command line now passes a bare `--cov` and `.coveragerc` decides, with a
+test pinning that.
+
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
 named function, shown both the offender it was written for and the lookalike it

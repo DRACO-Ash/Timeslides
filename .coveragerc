@@ -1,20 +1,53 @@
-# The platform's test stage invokes:
+# Coverage measurement, shaped so the SonarQube gate can actually read it.
 #
-#     pytest --cov --cov-report=xml:coverage.xml
+# WHY THE PATHS MATTER MORE THAN THE NUMBER
 #
-# A bare --cov means "take the source from configuration", so the measured set
-# has to be declared here. Without it the platform's invocation measures
-# whatever happens to be imported, which dilutes the figure the SonarQube gate
-# reads with test files and site-packages.
+# The gate reported "Line coverage: 0.0%" while the suite was at 100 per cent
+# locally. Nothing was wrong with the tests. The report was unreadable.
+#
+# With `source = timeslides`, coverage.py treats the package directory as the
+# root of the report: it writes `<source>/abs/path/to/timeslides</source>` and
+# then names every file relative to that, as `api.py`. SonarQube resolves a
+# coverage entry by joining a source root to a filename, so it was looking for
+# an absolute path belonging to the machine that ran the tests. On the scanner
+# that path does not exist, no file matched, and every analysed Python file was
+# therefore counted as nought covered lines. A report that cannot be resolved
+# does not read as "no data"; it reads as zero.
+#
+# Two settings fix it, and both are needed:
+#
+#   relative_files = True   stops absolute paths being baked in at all
+#   source = .              makes the project root the report root, so files
+#                           are named `timeslides/api.py`, which is what the
+#                           scanner is looking for
+#
+# The result is <source></source> and <source>.</source>, and filenames
+# relative to the project root, which resolve wherever the scan runs.
+#
+# tests/test_coverage_report.py generates a report and asserts that shape, so
+# this cannot quietly regress into another 0.0% that looks like a test problem.
 [run]
-source = timeslides
-branch = False
+relative_files = True
+source = .
 omit =
+    # The suite itself. Measured code is the application, not the tests.
+    tests/*
+    # The process bootstrap. main() only runs under __main__ and starts a real
+    # uvicorn server, so it cannot be measured honestly in process. It is
+    # verified out of process instead, by the Playwright suite and by the
+    # runtime contract check in AUDIT.md. Excluded in sonar-project.properties
+    # for the same reason, so the two agree.
+    app.py
     # Runs in a browser, not under the Python runner, so it reads as 0 per cent
     # here. Covered in substance by the Playwright suite and still analysed by
-    # SonarQube. The same exclusion and the same reason are in
-    # sonar-project.properties.
+    # SonarQube.
     timeslides/report/assets/*
+    # `source = .` means the root is walked, so anything a runner happens to
+    # leave in the working directory is excluded explicitly. None of these can
+    # contain this application's code.
+    .venv/*
+    */site-packages/*
+    */dist-packages/*
 
 [report]
 show_missing = True
