@@ -449,6 +449,34 @@ denominator. Both path assertions were run against the old configuration and
 fail on it. The pipeline's own invocation was then simulated from a clean
 checkout: `line-rate="1"`, 1,614 of 1,614 lines, 19 files, all relative.
 
+### The platform's environment, reproduced rather than remembered
+
+Three pipeline failures in a row were environment differences, not code
+defects. Each passed locally, each was cheap to reproduce once named, and each
+cost an upload to discover. `docker/appstore-sim.sh` now runs the suite the way
+the App Store's test stage does, and is part of the verification loop below.
+
+| Difference | What it cost |
+|---|---|
+| The tree is unpacked, not cloned: no `.git` | git checks had to skip |
+| `sonar-project.properties` is not in the tree | a test failed on a file that is correct in the repository |
+| **git is not installed**, though `.git` may be | `FileNotFoundError` inside a `skipif`, evaluated at import, so pytest reported a collection error and abandoned the run: **684 passing tests never executed** |
+| Playwright is not installed | the browser suite module-skips, which is correct and stays visible |
+
+The third is the one worth remembering. A helper that decides whether to skip
+runs before any test does, so it must not be able to fail. There were two
+copies of that helper: the original in `tests/conftest.py`, whose docstring
+describes this exact hazard and catches `OSError`, and a second one written
+beside it without the guard. There is now one, and a test that parses the test
+tree and fails if a second appears.
+
+The simulation was verified by reverting the helper to the raising version:
+it reproduces `Interrupted: 2 errors during collection` exactly. Its own first
+version used an empty `PATH` and failed twelve tests that need `find` and
+`chmod`, which was the simulation breaking the suite rather than the platform,
+so it now links the whole userland except git and checks that git really is
+unreachable before drawing any conclusion from a pass.
+
 ### Open risk: the scanner may never see sonar-project.properties
 
 **Fact.** The App Store's test stage runs in `/builds/.../timeslides` and
@@ -623,6 +651,7 @@ TIMESLIDES_DEMO=1 .venv/bin/python -m timeslides --out /tmp/check.html
 
 # The quality gate's rule families, locally. See CODE-QUALITY.md for the
 # register of findings behind each of these and which layer enforces it.
+sh docker/appstore-sim.sh                       # the platform's environment
 .venv/bin/ruff check .                          # Python
 npx eslint .                                    # JavaScript, if eslint is present
 node --check timeslides/report/assets/report.js

@@ -254,3 +254,46 @@ def test_the_verification_confirms_pip_is_not_in_the_image(script):
     installs nothing has no use for it. Removed in two places, so the check is
     what says one of them worked."""
     assert "pip is importable in the image" in script
+
+
+# --------------------------------------------------------------------------- #
+#  The App Store simulation
+#
+#  Three pipeline failures in a row were environment differences rather than
+#  code defects, and each was cheap to reproduce once named. docker/appstore-sim.sh
+#  reproduces them instead of remembering them.
+# --------------------------------------------------------------------------- #
+SIM = ROOT / "docker" / "appstore-sim.sh"
+
+
+def test_the_app_store_simulation_exists_and_is_valid_shell():
+    import subprocess
+
+    assert SIM.exists(), "the pre-upload simulation is missing"
+    done = subprocess.run(["sh", "-n", str(SIM)], capture_output=True,
+                          text=True, check=False)
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_simulation_reproduces_every_difference_that_has_bitten():
+    """Each line here is a pipeline failure that passed locally first."""
+    text = SIM.read_text(encoding="utf-8")
+    # The tree is unpacked, not cloned.
+    assert 'rm -rf "$WORK/.git"' in text
+    # The ingest does not carry the scanner's configuration.
+    assert 'rm -f "$WORK/sonar-project.properties"' in text
+    # The job container has no git binary, which is not the same thing as
+    # having no .git, and is what aborted collection for the whole suite.
+    assert "case \"$name\" in git|git-*) continue ;; esac" in text
+    # The upload is what git tracks, so an untracked file shows up as missing.
+    assert "git ls-files" in text
+
+
+def test_the_simulation_keeps_the_rest_of_the_userland():
+    """Its own first version used an empty PATH and failed twelve tests that
+    need find, chmod and rm. That is the simulation breaking the suite, not the
+    platform. The job container is a normal Debian userland without git."""
+    text = SIM.read_text(encoding="utf-8")
+    assert "so this proves nothing" in text, (
+        "the simulation must verify that git really is unreachable")
+    assert "ln -s" in text, "it should link the rest of the userland, not drop it"

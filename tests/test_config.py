@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.conftest import in_git_worktree
+
 from timeslides.config import DEFAULT_PORT, Settings, load_settings
 from timeslides.errors import ConfigError
 
@@ -103,22 +105,6 @@ def _root():
     return Path(__file__).resolve().parent.parent
 
 
-def _in_git_worktree() -> bool:
-    """The artefact is unzipped, not cloned, so git is not always present.
-
-    The first version of these tests assumed it was and failed inside the
-    extracted artefact, which is precisely the environment the platform runs
-    them in. The substantive check does not need git; only the ignore-rule
-    checks do, and those skip.
-    """
-    import subprocess
-    try:
-        done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                              cwd=_root(), capture_output=True, text=True,
-                              check=False)
-    except (OSError, FileNotFoundError):
-        return False
-    return done.returncode == 0 and done.stdout.strip() == "true"
 
 
 def test_the_coverage_configuration_ships_with_the_package():
@@ -142,7 +128,7 @@ def test_the_coverage_configuration_ships_with_the_package():
     assert "browser" in text, "the browser marker must be registered"
 
 
-@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
+@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
 def test_the_coverage_configuration_is_not_git_ignored():
     import subprocess
     ignored = subprocess.run(["git", "check-ignore", "pytest.ini"],
@@ -155,7 +141,7 @@ def test_the_coverage_configuration_is_not_git_ignored():
     assert tracked.returncode == 0, "pytest.ini is not tracked and will not ship"
 
 
-@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
+@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
 def test_credential_files_are_still_ignored():
     """Narrowing the ignore rule must not have reopened the original hole."""
     import subprocess

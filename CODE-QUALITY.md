@@ -186,6 +186,25 @@ Where a file is legitimately absent in one environment, the check skips with a
 reason that says so, and a companion check in a git work tree fails if the file
 is actually missing from the repository, so the skip cannot swallow a deletion.
 
+**A probe that decides whether to skip must not be able to fail.** A `skipif`
+decorator is evaluated at import, so an exception in it is not one test
+failing: pytest reports a collection error and abandons the whole run. A helper
+that shelled out to `git` raised `FileNotFoundError` in the pipeline, whose job
+container has `.git` but no git binary, and 684 passing tests never executed.
+
+**A helper copied is a helper that will diverge, and the copy nobody is looking
+at is the one that breaks.** The correct implementation of that probe already
+existed in `tests/conftest.py`, with a docstring describing this exact hazard
+and an `except OSError`. A second copy was written beside it without the guard.
+There is now one, and `test_there_is_only_one_git_probe` parses the test tree
+and fails if a second appears.
+
+**Reproduce the environment; do not remember it.** Three pipeline failures in a
+row were environment differences that passed locally. `docker/appstore-sim.sh`
+runs the suite the way the platform does -- unpacked tree, no `.git`, no
+`sonar-project.properties`, no git binary -- and is in the verification loop.
+It was itself verified by reverting the defect and confirming it goes red.
+
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
 named function, shown both the offender it was written for and the lookalike it

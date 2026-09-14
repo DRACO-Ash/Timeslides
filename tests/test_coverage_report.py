@@ -23,6 +23,7 @@ What matters, in order:
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -31,15 +32,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import in_git_worktree
+
 ROOT = Path(__file__).resolve().parent.parent
 
-
-def _in_git_worktree() -> bool:
-    """The App Store artefact is unpacked, not cloned, so git is not always
-    there to ask."""
-    done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                          cwd=ROOT, capture_output=True, text=True, check=False)
-    return done.returncode == 0
 
 
 @pytest.fixture(scope="module")
@@ -164,7 +160,7 @@ def test_the_two_coverage_exclusion_lists_agree():
     assert "assets" in sonar
 
 
-@pytest.mark.skipif(not _in_git_worktree(), reason="not a git work tree")
+@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
 def test_the_scanner_configuration_ships():
     """The other half of the skip above.
 
@@ -196,3 +192,53 @@ def test_pytest_does_not_override_the_coverage_source():
     assert "--cov=" not in addopts, (
         "a --cov with an argument overrides .coveragerc and changes the shape "
         f"of the report the scanner reads: {addopts}")
+
+
+# --------------------------------------------------------------------------- #
+#  The helper that decides whether to skip must not be able to fail
+#
+#  A skipif decorator is evaluated at import. An exception there is not one
+#  test failing, it is a collection error, and pytest abandons the entire run:
+#  "Interrupted: 1 error during collection", 684 passing tests never executed.
+#  That is what a second, private copy of this helper without a try/except did
+#  in the pipeline, where .git exists and the git binary does not.
+# --------------------------------------------------------------------------- #
+def test_the_git_probe_returns_false_rather_than_raising_without_git(tmp_path):
+    """Run with a PATH that has no git on it, which is the pipeline's image."""
+    empty = tmp_path / "nogit"
+    empty.mkdir()
+    program = tmp_path / "probe.py"
+    program.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "from tests.conftest import in_git_worktree\n"
+        "print(in_git_worktree())\n", encoding="utf-8")
+    done = subprocess.run([sys.executable, str(program)], cwd=ROOT,
+                          env={**os.environ, "PATH": str(empty)},
+                          capture_output=True, text=True, check=False)
+    assert done.returncode == 0, f"the probe raised instead of returning:\n{done.stderr}"
+    assert done.stdout.strip() == "False"
+
+
+def test_there_is_only_one_git_probe():
+    """The bug was a duplicate, not a typo.
+
+    The correct implementation already existed in tests/conftest.py, with a
+    docstring describing this exact failure. A second copy was written next to
+    it without the try/except. Two implementations of one decision will
+    diverge, and the one that diverges is the one nobody is looking at.
+
+    Found by parsing, not by searching the text: a string search for
+    "def in_git_worktree" matches the line of this test that contains it, which
+    is the fourth time in this repository that a check has reported on its own
+    source. The rule is in CODE-QUALITY.md; this is the rule being followed.
+    """
+    copies = []
+    for path in sorted((ROOT / "tests").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name.lstrip("_") == "in_git_worktree"):
+                copies.append(path.name)
+    assert copies == ["conftest.py"], (
+        f"the git probe is defined in more than one place: {copies}")

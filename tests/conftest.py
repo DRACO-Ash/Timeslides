@@ -77,3 +77,39 @@ def sv_record(epoch="2026-06-24T00:00:00.000Z", frame="J2000", n=1.0):
     return {"epoch": epoch, "xpos": n, "ypos": 2 * n, "zpos": 3 * n,
             "xvel": 4 * n, "yvel": 5 * n, "zvel": 6 * n,
             **({"referenceFrame": frame} if frame else {})}
+
+
+# --------------------------------------------------------------------------- #
+#  Asking git a question, in a place that may not have git
+#
+#  One implementation, imported by every test that needs it. There were two,
+#  and the copy without the try/except raised FileNotFoundError inside a
+#  skipif decorator, which is evaluated at import. A failure there is not one
+#  test failing: it is a collection error, and pytest abandons the whole run.
+#  684 passing tests never executed because of it.
+# --------------------------------------------------------------------------- #
+def in_git_worktree(root=None) -> bool:
+    """True only if git is installed AND this is a work tree.
+
+    Two separate things can be missing, and both are normal here:
+
+    ● the .git directory, because the App Store artefact is unpacked rather
+      than cloned;
+    ● the git binary itself, because the pipeline's job container is
+      python:3.12-slim and the checkout is done by a different container. The
+      tree has .git in it and no git to read it with.
+
+    Returns False for either, and never raises. A helper used to decide whether
+    to skip must not be able to fail: it runs before any test does.
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = root or Path(__file__).resolve().parent.parent
+    try:
+        done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                              cwd=root, capture_output=True, text=True,
+                              check=False)
+    except OSError:
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "true"
