@@ -23,3 +23,9 @@ __pycache__/
 
 coverage.xml
 coverage-reports/
+
+# Upload artefacts. These were tracked, so every upload zip contained the
+# previous upload zip: the v1.6.3 package shipped 203 KB of v1.4.0 inside it,
+# and the ingested repository carried an old copy of the whole application.
+# Built from `git ls-files`, so a tracked build output feeds itself.
+dist/
