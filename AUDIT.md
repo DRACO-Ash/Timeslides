@@ -534,6 +534,60 @@ log. If it prints `sonar-project.properties ABSENT` and the gate still reports
 which is configuration on the platform side and nothing that can be fixed in
 this repository.
 
+### Root cause of the 0.0%, measured on a real SonarQube
+
+Three rounds of reasoning about why the gate read 0.0% produced three plausible
+answers and three wrong fixes. The fourth round stopped reasoning and measured:
+`docker/sonar-probe.sh` starts SonarQube 26.9, scans this repository several
+ways, and reads the coverage back through the API.
+
+| Tree scanned | Coverage | Scanner said |
+|---|---|---|
+| Our config, with `coverage.xml` present | **100.0%** | `Parsing report '/usr/src/coverage.xml'` |
+| No `sonar-project.properties` (the App Store's tree) | 25.0% | found the report at the plugin's default path |
+| **No coverage report present at all** | **0.0%** | `No report was found for sonar.python.coverage.reportPaths` |
+| A fresh checkout, after this change | **100.0%** | `Parsing report '.../coverage-timeslides.xml'` |
+
+The third line is the pipeline. **0.0% is not a low score. It is the score a
+project gets when the scanner finds no report**, and the arithmetic said so
+before the experiment did: if our report were imported at all, the JavaScript
+would drag the figure to about 73 per cent, not to zero. Only "no coverage data
+reached any file" produces exactly 0.0.
+
+**Why there was no report.** The code-quality stage is a separate job from the
+test stage and starts from a fresh checkout -- the log says so: `Initialized
+empty Git repository ... Created fresh repository`. `coverage.xml` is written
+by the test run and was git-ignored, so it was not in that checkout, and
+nothing else put it there. Every fix before this one improved a file the
+scanner never opened.
+
+**The fix.** The report is committed, at
+`coverage-reports/coverage-timeslides.xml`. That path is not arbitrary: it is
+where the SonarQube Python plugin looks when no `reportPaths` is configured,
+which covers the case where our `sonar-project.properties` never reaches the
+scanner either. `sonar-project.properties` now names both paths, so whichever
+exists is used, and a report delivered by the pipeline as an artefact would
+simply overwrite the committed one. The change is therefore safe whether or not
+the pipeline carries files between jobs.
+
+**Committing a generated file is a hazard, so it is fenced.**
+
+● The report is deterministic: the generation timestamp is zeroed, so two runs
+  over unchanged code produce byte-identical files and a diff means the
+  coverage really moved.
+● A run that measured fewer files, or covered a smaller fraction of them, will
+  not overwrite the committed copy. A report from one test file is a true
+  statement about that run and a false one about the project.
+● A test fails if the committed copy differs from what the suite just produced,
+  so a stale report is a failure here rather than a quiet misstatement at the
+  gate.
+● A test fails if any module in the package is missing from the committed
+  report, because a report that has lost a module passes by measuring less.
+
+If the platform confirms it carries the coverage report between jobs, stop
+tracking `coverage-reports/` and ignore it again. Until then this is the only
+mechanism available from inside the repository, and it is now proven to work.
+
 ### Open risk: the scanner may never see sonar-project.properties
 
 **Fact.** The App Store's test stage runs in `/builds/.../timeslides` and

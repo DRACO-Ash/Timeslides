@@ -34,7 +34,8 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import (DEFAULT_REPORT_COPY, _describe_report,
-                           _normalise_source_roots, in_git_worktree)
+                           _normalise_source_roots, _report_completeness,
+                           in_git_worktree)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -377,25 +378,105 @@ def test_the_conventional_copy_matches_the_plugin_s_default_pattern():
         f"{DEFAULT_REPORT_COPY} would not be found by the default pattern")
 
 
-def test_the_conventional_copy_is_the_same_report():
-    """A second copy that differs from the first is two answers to one
-    question. It is copied after normalisation, so it carries the same
-    unambiguous source root."""
-    produced = ROOT / "coverage.xml"
-    copy = ROOT / DEFAULT_REPORT_COPY
-    if not (produced.exists() and copy.exists()):
-        pytest.skip("no coverage report from a previous run in this tree")
-    assert copy.read_bytes() == produced.read_bytes()
-    roots = [(s.text or "") for s in ET.parse(copy).getroot().iter("source")]
-    assert "" not in roots, roots
+def test_a_partial_run_does_not_replace_a_complete_report(tmp_path):
+    """The hazard of committing a generated file.
+
+    A report from one test file is a true statement about that run and a false
+    one about the project. Committing it would understate the coverage the gate
+    reads, so a run that measured fewer files or covered less leaves the
+    committed copy alone.
+    """
+    complete = tmp_path / "complete.xml"
+    complete.write_text(RAW_SOURCES.replace(
+        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>',
+        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>\n'
+        '\t\t\t<class name="udl.py" filename="timeslides/udl.py" line-rate="1"/>'),
+        encoding="utf-8")
+    partial = tmp_path / "partial.xml"
+    partial.write_text(RAW_SOURCES.replace('line-rate="1">', 'line-rate="0.1">', 1),
+                       encoding="utf-8")
+    assert _report_completeness(complete) == (2, 1.0)
+    assert _report_completeness(partial)[0] == 1
+
+
+# --------------------------------------------------------------------------- #
+#  The committed report
+#
+#  The code-quality stage starts from a fresh checkout, so a report written by
+#  the test stage is not in it unless the pipeline carries it across. A real
+#  SonarQube scanning this tree with no report scores exactly 0.0% and logs
+#  "No report was found for sonar.python.coverage.reportPaths" -- the gate's
+#  number and the gate's wording. The same tree with the report scores 100.0%.
+#  docker/sonar-probe.sh runs that experiment.
+#
+#  So the report is committed. A generated file in a repository goes stale and
+#  then lies, which is why these tests exist: staleness is a failure here
+#  rather than a quiet misstatement at the gate.
+# --------------------------------------------------------------------------- #
+def test_the_generation_timestamp_is_zeroed(tmp_path):
+    """Metadata nothing reads, removed so the file is a pure function of the
+    coverage. Without this the working tree is dirty after every run and no
+    staleness check is possible."""
+    path = tmp_path / "coverage.xml"
+    path.write_text(
+        RAW_SOURCES.replace('<coverage version="7.16.0"',
+                            '<coverage version="7.16.0" timestamp="1789418939218"'),
+        encoding="utf-8")
+    _normalise_source_roots(path)
+    assert 'timestamp="0"' in path.read_text(encoding="utf-8")
+    assert "1789418939218" not in path.read_text(encoding="utf-8")
+
+
+def test_the_committed_report_covers_every_module():
+    """A report that has lost a module would pass the gate by measuring less.
+
+    Reads the committed copy rather than the working coverage.xml: a test runs
+    before the terminal-summary hook writes the new report, so the working file
+    during a run is the previous run's, which may have been one test file.
+    """
+    committed = ROOT / DEFAULT_REPORT_COPY
+    assert committed.exists(), "the committed coverage report is missing"
+    measured = {c.get("filename") for c in ET.parse(committed).getroot().iter("class")}
+    on_disk = {str(p.relative_to(ROOT)) for p in (ROOT / "timeslides").rglob("*.py")
+               if "report/assets" not in p.as_posix()}
+    assert sorted(on_disk - measured) == []
+
+
+def test_the_committed_report_is_the_one_the_scanner_would_read():
+    root = ET.parse(ROOT / DEFAULT_REPORT_COPY).getroot()
+    assert root.get("line-rate") == "1", (
+        f"the committed report is not at 100 per cent: {root.get('line-rate')}")
+    roots = [(s.text or "") for s in root.iter("source")]
+    assert roots == ["."], roots
 
 
 @pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
-def test_the_conventional_copy_is_not_committed():
-    """It is generated on every run. A generated file in the repository is a
-    file that goes stale and then lies."""
-    ignored = subprocess.run(
-        ["git", "check-ignore", DEFAULT_REPORT_COPY],
+def test_the_committed_copy_is_tracked():
+    """It is the only coverage report present in a fresh checkout, which is
+    what the code-quality stage starts from."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", DEFAULT_REPORT_COPY],
         cwd=ROOT, capture_output=True, text=True, check=False)
-    assert ignored.returncode == 0, (
-        f"{DEFAULT_REPORT_COPY} is not git-ignored and would be committed")
+    assert tracked.returncode == 0, (
+        f"{DEFAULT_REPORT_COPY} is not tracked, so a fresh checkout has no "
+        "coverage report and the gate reads 0.0%")
+
+
+@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
+def test_the_committed_report_is_not_stale():
+    """The whole reason a generated file may be committed at all.
+
+    The report is deterministic, so a difference here means the coverage really
+    changed and the committed copy no longer describes this code. Regenerate it
+    by running the suite, then commit the result.
+    """
+    # `git diff` rather than `git status`: status calls a newly staged file
+    # dirty, which is a commit in progress rather than a stale report. What
+    # matters is the working tree differing from what is staged, which is what
+    # "regenerated and not committed" looks like.
+    diff = subprocess.run(["git", "diff", "--quiet", "--", DEFAULT_REPORT_COPY],
+                          cwd=ROOT, capture_output=True, text=True, check=False)
+    assert diff.returncode == 0, (
+        f"{DEFAULT_REPORT_COPY} has changed and is not committed. The suite "
+        "has just regenerated it; commit it, or the code-quality stage reads "
+        "coverage that no longer describes this code.")

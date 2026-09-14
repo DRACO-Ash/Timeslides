@@ -20,6 +20,25 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+
+# coverage.xml stays generated and ignored. coverage-reports/ below is TRACKED.
+#
+# The code-quality stage is a separate job from the test stage and starts from
+# a fresh checkout ("Initialized empty Git repository ... Created fresh
+# repository"). A report written by the test run is not in that checkout unless
+# the pipeline carries it across, and the evidence says it does not: a real
+# SonarQube scanning this tree with no report present scores exactly 0.0% and
+# logs "No report was found for sonar.python.coverage.reportPaths", which is
+# the gate's result and its wording. The same tree WITH the report scores
+# 100.0%. See docker/sonar-probe.sh, which runs that experiment.
+#
+# So the report is committed, because that is the only way it can be in a
+# checkout we do not control. This is a workaround for a pipeline we cannot
+# see, not a habit: a generated file in a repository goes stale and then lies.
+# tests/test_coverage_report.py fails if the committed report does not match
+# what the suite currently produces, so staleness is a test failure rather than
+# a quiet misstatement. If the platform confirms it carries the report between
+# jobs, stop tracking coverage-reports/ and ignore it again.
 coverage.xml
 htmlcov/
 *.egg-info/
@@ -31,6 +50,9 @@ build/
 runs/
 phase_offset_*.html
 
-# A second copy of the coverage report, written at the path SonarQube
-# searches by default. Generated, not source.
-coverage-reports/
+# coverage-reports/ is TRACKED too, for the reason above. It holds the same
+# report at coverage-reports/coverage-timeslides.xml, which is where the
+# SonarQube Python plugin looks when no reportPaths is configured: its default
+# is coverage-reports/*coverage-*.xml. Proven, not assumed -- scanning without
+# sonar-project.properties, the scanner logs
+# "Parsing report '/usr/src/coverage-reports/coverage-timeslides.xml'".

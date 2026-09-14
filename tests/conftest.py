@@ -153,10 +153,27 @@ def _coverage_report_path(config):
 
 
 def _normalise_source_roots(path) -> str:
-    """Drop empty <source> elements. Returns a line describing what happened."""
+    """Make the report unambiguous and deterministic. Returns what it did.
+
+    Two edits, both to metadata rather than to coverage data:
+
+    ● empty <source> elements are dropped, because a scanner joins a source
+      root to a filename and an empty root turns timeslides/api.py into the
+      absolute /timeslides/api.py, which exists nowhere;
+    ● the generation timestamp is zeroed, because the report is committed and a
+      field that changes on every run would leave the working tree permanently
+      dirty and make a staleness check impossible. Nothing reads it: the
+      scanner imported this report at 100.0% with the timestamp zeroed.
+
+    What is left is a pure function of the coverage, so two runs over unchanged
+    code produce byte-identical files and `git diff coverage.xml` means the
+    coverage really moved.
+    """
     import re
 
     text = path.read_text(encoding="utf-8")
+    text = re.sub(r'(<coverage[^>]*?)timestamp="\d+"', r'\1timestamp="0"', text, count=1)
+    path.write_text(text, encoding="utf-8")
     block = re.search(r"<sources>.*?</sources>", text, re.DOTALL)
     if not block:
         return "no <sources> block; nothing to normalise"
@@ -186,14 +203,46 @@ def _normalise_source_roots(path) -> str:
 DEFAULT_REPORT_COPY = "coverage-reports/coverage-timeslides.xml"
 
 
+def _report_completeness(path):
+    """(number of files, line-rate) for a report, or None if unreadable."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    return len(list(root.iter("class"))), float(root.get("line-rate") or 0)
+
+
 def _copy_to_the_conventional_path(path) -> str:
+    """Update the committed copy, but never replace a complete report with a
+    partial one.
+
+    This copy is committed, because the code-quality stage starts from a fresh
+    checkout and a report written by the test stage is not in it. That makes
+    running one test file dangerous in a way it would not otherwise be: the
+    report from a partial run is a true statement about that run and a false
+    one about the project, and committing it would understate the coverage the
+    gate reads.
+
+    So a run that measured fewer files, or covered a smaller fraction of them,
+    leaves the committed copy alone and says so.
+    """
     import shutil
     from pathlib import Path
 
     target = Path(DEFAULT_REPORT_COPY)
     target.parent.mkdir(parents=True, exist_ok=True)
+    fresh = _report_completeness(path)
+    if fresh is None:
+        return f"{target} left alone: the new report could not be read"
+    existing = _report_completeness(target) if target.exists() else None
+    if existing is not None and (fresh[0] < existing[0] or fresh[1] < existing[1]):
+        return (f"{target} left alone: this run measured {fresh[0]} files at "
+                f"{fresh[1]:.0%}, the committed report has {existing[0]} at "
+                f"{existing[1]:.0%}. Run the whole suite to update it.")
     shutil.copyfile(path, target)
-    return f"also written to {target} (the plugin's default search path)"
+    return f"{target} updated (the plugin's default search path, committed)"
 
 
 def _describe_report(path) -> list:

@@ -218,6 +218,15 @@ scanner searches by default is a guess about configuration we cannot see. It is
 in the code with the word hypothesis attached and the cost of being wrong
 stated, so nobody later reads it as something that was verified.
 
+**When reasoning has been wrong twice, stop reasoning and measure.** Three
+rounds of plausible explanations for a 0.0% coverage gate produced three wrong
+fixes and cost four uploads. The fourth round ran a real SonarQube against the
+repository in three configurations and read the answer off the API in ten
+minutes. `docker/sonar-probe.sh` keeps that experiment repeatable. The tell was
+available earlier and went unexamined: the arithmetic said an imported report
+would score about 73 per cent, so exactly 0.0 could only mean no report was
+read at all.
+
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
 named function, shown both the offender it was written for and the lookalike it
