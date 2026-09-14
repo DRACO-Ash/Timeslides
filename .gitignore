@@ -21,7 +21,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 
-# coverage.xml stays generated and ignored. coverage-reports/ below is TRACKED.
+# coverage.xml is TRACKED, and so is coverage-reports/ below.
 #
 # The code-quality stage is a separate job from the test stage and starts from
 # a fresh checkout ("Initialized empty Git repository ... Created fresh
@@ -38,8 +38,7 @@ __pycache__/
 # tests/test_coverage_report.py fails if the committed report does not match
 # what the suite currently produces, so staleness is a test failure rather than
 # a quiet misstatement. If the platform confirms it carries the report between
-# jobs, stop tracking coverage-reports/ and ignore it again.
-coverage.xml
+# jobs, stop tracking both and ignore them again.
 htmlcov/
 *.egg-info/
 dist/

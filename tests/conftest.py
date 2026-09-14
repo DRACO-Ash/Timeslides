@@ -214,19 +214,29 @@ def _report_completeness(path):
     return len(list(root.iter("class"))), float(root.get("line-rate") or 0)
 
 
-def _copy_to_the_conventional_path(path) -> str:
-    """Update the committed copy, but never replace a complete report with a
-    partial one.
+def _publish_report(path) -> str:
+    """Keep both committed copies of the report in step, and never downgrade.
 
-    This copy is committed, because the code-quality stage starts from a fresh
-    checkout and a report written by the test stage is not in it. That makes
-    running one test file dangerous in a way it would not otherwise be: the
-    report from a partial run is a true statement about that run and a false
-    one about the project, and committing it would understate the coverage the
-    gate reads.
+    TWO PATHS, BECAUSE THREE CONFIGURATIONS HAVE TO WORK
 
-    So a run that measured fewer files, or covered a smaller fraction of them,
-    leaves the committed copy alone and says so.
+    ● the pipeline passes -Dsonar.python.coverage.reportPaths=coverage.xml on
+      the command line, which overrides both the properties file and the
+      plugin default, so a report has to exist at the repository root;
+    ● sonar-project.properties is read, and names both paths;
+    ● nothing is configured at all, and the plugin falls back to its default
+      pattern coverage-reports/*coverage-*.xml.
+
+    Committing both costs 120 KB and removes the guessing.
+
+    NEVER DOWNGRADE
+
+    pytest-cov rewrites coverage.xml on every run, including a run of one test
+    file. That report is a true statement about that run and a false one about
+    the project, and these files are committed, so a partial run must not
+    replace them. When the fresh report measures fewer files or covers less,
+    the committed content is put back instead, and the line printed below says
+    so. The terminal summary above it still shows what this run actually
+    measured.
     """
     import shutil
     from pathlib import Path
@@ -238,11 +248,12 @@ def _copy_to_the_conventional_path(path) -> str:
         return f"{target} left alone: the new report could not be read"
     existing = _report_completeness(target) if target.exists() else None
     if existing is not None and (fresh[0] < existing[0] or fresh[1] < existing[1]):
-        return (f"{target} left alone: this run measured {fresh[0]} files at "
-                f"{fresh[1]:.0%}, the committed report has {existing[0]} at "
-                f"{existing[1]:.0%}. Run the whole suite to update it.")
+        shutil.copyfile(target, path)
+        return (f"this run measured {fresh[0]} files at {fresh[1]:.0%}; the "
+                f"committed report has {existing[0]} at {existing[1]:.0%} and "
+                f"has been left in place. Run the whole suite to update it.")
     shutil.copyfile(path, target)
-    return f"{target} updated (the plugin's default search path, committed)"
+    return f"published to {path} and {target}, both committed"
 
 
 def _describe_report(path) -> list:
@@ -298,7 +309,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         else:
             write(f"  coverage xml              {report.resolve()}")
             write(f"  {_normalise_source_roots(report)}")
-            write(f"  {_copy_to_the_conventional_path(report)}")
+            write(f"  {_publish_report(report)}")
             for line in _describe_report(report):
                 write(line)
     except (OSError, ValueError) as exc:

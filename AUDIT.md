@@ -588,6 +588,44 @@ If the platform confirms it carries the coverage report between jobs, stop
 tracking `coverage-reports/` and ignore it again. Until then this is the only
 mechanism available from inside the repository, and it is now proven to work.
 
+### Measured against the pipeline's own scanner flags
+
+The pipeline passes its Sonar configuration on the command line
+(`-Dsonar.sources=app.py,timeslides` and the rest, via `SONAR_SCANNER_OPTS`).
+Command-line properties override both `sonar-project.properties` and the
+plugin's defaults, so the report has to be at the path the **command line**
+names. It now is: both `coverage.xml` and
+`coverage-reports/coverage-timeslides.xml` are committed, which covers the
+three configurations that are possible.
+
+Every row below was measured on a real SonarQube against a checkout built from
+`git ls-files`, which is what the code-quality stage starts from.
+
+| Configuration | Coverage |
+|---|---|
+| Pipeline flags **and** our `sonar-project.properties` | **100.0%** |
+| Pipeline flags only, properties file ignored | **80.6%** (1,614 of 2,002) |
+| Nothing configured at all | found via the plugin's default path |
+| Before this change: no report in the checkout | **0.0%** |
+
+Both live configurations now clear the 80 per cent threshold. The second clears
+it by 0.6 of a point, because without the properties file the coverage
+exclusions do not apply and the 388 lines of `report.js` and `picker.js` count
+against the metric. If that margin matters, the exclusions have to be applied
+on the SonarQube project itself; nothing in the repository can reach a scan
+whose configuration arrives on the command line.
+
+**A note on the Zero Coverage Sensor**, because it looks like a culprit and is
+not. It runs in every analysis, including the one that scored 100.0% here:
+
+    21:50:25  Parsing report '/usr/src/coverage.xml'
+    21:50:37  Sensor Zero Coverage Sensor
+    21:50:37  Sensor Zero Coverage Sensor (done) | time=0ms
+
+It assigns zero coverage to files no report mentioned, which is its job. The
+line that actually indicates the failure is the warning
+`No report was found for sonar.python.coverage.reportPaths`.
+
 ### Open risk: the scanner may never see sonar-project.properties
 
 **Fact.** The App Store's test stage runs in `/builds/.../timeslides` and

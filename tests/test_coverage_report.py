@@ -34,7 +34,8 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import (DEFAULT_REPORT_COPY, _describe_report,
-                           _normalise_source_roots, _report_completeness,
+                           _normalise_source_roots, _publish_report,
+                           _report_completeness,
                            in_git_worktree)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -451,15 +452,24 @@ def test_the_committed_report_is_the_one_the_scanner_would_read():
 
 
 @pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
-def test_the_committed_copy_is_tracked():
-    """It is the only coverage report present in a fresh checkout, which is
-    what the code-quality stage starts from."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", DEFAULT_REPORT_COPY],
-        cwd=ROOT, capture_output=True, text=True, check=False)
+@pytest.mark.parametrize("path", ["coverage.xml", DEFAULT_REPORT_COPY])
+def test_the_committed_reports_are_tracked(path):
+    """Both, because three configurations have to work and they disagree about
+    where the report lives.
+
+    The pipeline passes -Dsonar.python.coverage.reportPaths on the command
+    line, which overrides the properties file and the plugin default alike, so
+    a report has to be at the repository root. If instead the properties file
+    is read it names both. If nothing is configured, the plugin's default
+    pattern finds the second. A fresh checkout is what the code-quality stage
+    starts from, so a report that is not committed is not there at all.
+    """
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", path],
+                             cwd=ROOT, capture_output=True, text=True,
+                             check=False)
     assert tracked.returncode == 0, (
-        f"{DEFAULT_REPORT_COPY} is not tracked, so a fresh checkout has no "
-        "coverage report and the gate reads 0.0%")
+        f"{path} is not tracked, so a fresh checkout may have no coverage "
+        "report and the gate reads 0.0%")
 
 
 @pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
@@ -474,9 +484,44 @@ def test_the_committed_report_is_not_stale():
     # dirty, which is a commit in progress rather than a stale report. What
     # matters is the working tree differing from what is staged, which is what
     # "regenerated and not committed" looks like.
-    diff = subprocess.run(["git", "diff", "--quiet", "--", DEFAULT_REPORT_COPY],
-                          cwd=ROOT, capture_output=True, text=True, check=False)
-    assert diff.returncode == 0, (
-        f"{DEFAULT_REPORT_COPY} has changed and is not committed. The suite "
-        "has just regenerated it; commit it, or the code-quality stage reads "
-        "coverage that no longer describes this code.")
+    for path in ("coverage.xml", DEFAULT_REPORT_COPY):
+        diff = subprocess.run(["git", "diff", "--quiet", "--", path],
+                              cwd=ROOT, capture_output=True, text=True,
+                              check=False)
+        assert diff.returncode == 0, (
+            f"{path} has changed and is not committed. The suite has just "
+            "regenerated it; commit it, or the code-quality stage reads "
+            "coverage that no longer describes this code.")
+
+
+def test_a_partial_run_restores_the_committed_report(tmp_path, monkeypatch):
+    """pytest-cov rewrites coverage.xml on every run, including a run of one
+    test file. Both files are committed, so a partial report must not be left
+    in the working tree where it would be committed by mistake."""
+    monkeypatch.chdir(tmp_path)
+    complete = RAW_SOURCES.replace(
+        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>',
+        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>\n'
+        '\t\t\t<class name="udl.py" filename="timeslides/udl.py" line-rate="1"/>')
+    committed = tmp_path / DEFAULT_REPORT_COPY
+    committed.parent.mkdir(parents=True)
+    committed.write_text(complete, encoding="utf-8")
+
+    fresh = tmp_path / "coverage.xml"
+    fresh.write_text(RAW_SOURCES, encoding="utf-8")   # one file, not two
+    message = _publish_report(fresh)
+
+    assert "left in place" in message, message
+    assert fresh.read_text(encoding="utf-8") == complete, (
+        "the partial report was left in the working tree")
+    assert committed.read_text(encoding="utf-8") == complete
+
+
+def test_a_complete_run_publishes_to_both_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fresh = tmp_path / "coverage.xml"
+    fresh.write_text(RAW_SOURCES, encoding="utf-8")
+    message = _publish_report(fresh)
+    assert "published" in message, message
+    copy = tmp_path / DEFAULT_REPORT_COPY
+    assert copy.read_bytes() == fresh.read_bytes()

@@ -117,7 +117,20 @@ cp -r "$WORK/tree" "$WORK/noconfig"
 rm -f "$WORK/noconfig/sonar-project.properties"
 scan probe-no-config "$WORK/noconfig" -Dsonar.sources=.
 
-say "3. with no coverage report present, which is what 0.0% means"
+say "3. with the pipeline's own flags, which override the properties file"
+say "   (-Dsonar.sources=app.py,timeslides -Dsonar.python.coverage.reportPaths=coverage.xml)"
+scan probe-platform-flags "$WORK/tree" \
+    -Dsonar.sources=app.py,timeslides -Dsonar.tests=tests \
+    -Dsonar.python.coverage.reportPaths=coverage.xml
+
+say "4. the same flags with no properties file, so no coverage exclusions"
+cp -r "$WORK/tree" "$WORK/flagsonly"
+rm -f "$WORK/flagsonly/sonar-project.properties"
+scan probe-flags-only "$WORK/flagsonly" \
+    -Dsonar.sources=app.py,timeslides -Dsonar.tests=tests \
+    -Dsonar.python.coverage.reportPaths=coverage.xml
+
+say "5. with no coverage report present, which is what 0.0% means"
 cp -r "$WORK/tree" "$WORK/noreport"
 rm -f "$WORK/noreport/coverage.xml"
 rm -rf "$WORK/noreport/coverage-reports"
