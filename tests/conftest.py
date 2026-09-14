@@ -116,33 +116,23 @@ def in_git_worktree(root=None) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-#  The coverage report, made unambiguous, and the environment, made visible
+#  The environment, made visible
 #
-#  The gate reported "Line coverage is 0.0%" twice. The first time the report
-#  named files relative to an absolute path on the test runner and nothing
-#  resolved. That was fixed, and the gate still said 0.0%.
+#  Three pipeline failures turned on environment differences that were
+#  invisible from here, so every run prints what it can see into the test
+#  stage's log, which is the one part of the platform we can read.
 #
-#  coverage.py writes TWO source roots for a report rooted at the project:
-#
-#      <sources><source></source><source>.</source></sources>
-#
-#  The first is empty. A scanner resolves a coverage entry by joining a source
-#  root to a filename, and joining an empty root to "timeslides/api.py" gives
-#  "/timeslides/api.py", an absolute path that exists nowhere. A parser that
-#  takes the first root rather than trying each therefore resolves no file at
-#  all, and a report in which nothing resolves does not read as "no data": it
-#  reads as nought per cent covered.
-#
-#  So the empty root is removed, leaving exactly one, ".". That resolves under
-#  both parser behaviours: joined to the filename it gives the right relative
-#  path, and a parser that ignores <sources> entirely resolves the same
-#  filename against the project directory. No coverage data is altered; only
-#  an ambiguous, empty element is dropped.
-#
-#  The block printed afterwards exists because three pipeline failures in a row
-#  turned on environment differences that were invisible from here. It prints
-#  into the test stage's log, which is the one part of the platform we can see.
+#  It no longer rewrites the coverage report. An earlier version normalised the
+#  report's source roots and published copies of it, on the theory that the
+#  scanner could not resolve the paths. That theory was wrong: the gate read
+#  79.2% from a report in the plain form pytest-cov writes, and the coverage
+#  configuration was byte-identical when it later read 0.0%. Changing a working
+#  artefact on an unproven theory cost four uploads. The report is now left
+#  exactly as pytest-cov writes it.
 # --------------------------------------------------------------------------- #
+DEFAULT_REPORT_COPY = "coverage-reports/coverage-timeslides.xml"
+
+
 def _coverage_report_path(config):
     """Where pytest-cov was told to write the XML, or None if it was not."""
     reports = getattr(config.option, "cov_report", None) or {}
@@ -150,57 +140,6 @@ def _coverage_report_path(config):
         return None
     from pathlib import Path
     return Path(reports["xml"] or "coverage.xml")
-
-
-def _normalise_source_roots(path) -> str:
-    """Make the report unambiguous and deterministic. Returns what it did.
-
-    Two edits, both to metadata rather than to coverage data:
-
-    ● empty <source> elements are dropped, because a scanner joins a source
-      root to a filename and an empty root turns timeslides/api.py into the
-      absolute /timeslides/api.py, which exists nowhere;
-    ● the generation timestamp is zeroed, because the report is committed and a
-      field that changes on every run would leave the working tree permanently
-      dirty and make a staleness check impossible. Nothing reads it: the
-      scanner imported this report at 100.0% with the timestamp zeroed.
-
-    What is left is a pure function of the coverage, so two runs over unchanged
-    code produce byte-identical files and `git diff coverage.xml` means the
-    coverage really moved.
-    """
-    import re
-
-    text = path.read_text(encoding="utf-8")
-    text = re.sub(r'(<coverage[^>]*?)timestamp="\d+"', r'\1timestamp="0"', text, count=1)
-    path.write_text(text, encoding="utf-8")
-    block = re.search(r"<sources>.*?</sources>", text, re.DOTALL)
-    if not block:
-        return "no <sources> block; nothing to normalise"
-    roots = re.findall(r"<source>(.*?)</source>", block.group(0), re.DOTALL)
-    kept = [r for r in roots if r.strip()] or ["."]
-    if kept == roots:
-        return f"source roots already unambiguous: {kept}"
-    rebuilt = ("<sources>\n\t\t"
-               + "\n\t\t".join(f"<source>{r}</source>" for r in kept)
-               + "\n\t</sources>")
-    path.write_text(text.replace(block.group(0), rebuilt, 1), encoding="utf-8")
-    return f"removed {len(roots) - len(kept)} empty source root(s); kept {kept}"
-
-
-# SonarQube's Python plugin has carried a default for
-# sonar.python.coverage.reportPaths of "coverage-reports/*coverage-*.xml" for a
-# long time. If the scanner here is running without our sonar-project.properties
-# -- which the App Store's tree demonstrably does not contain -- then no report
-# path is configured, nothing is read, and every analysed line counts as
-# uncovered, which is exactly the 0.0% the gate reports.
-#
-# So the same report is also written where that default would look. This is a
-# hypothesis about the scanner's configuration, not a fact about it, and it is
-# recorded as one: if the default is not what it is believed to be, the cost is
-# a second copy of a 300 KB file that nothing reads. If it is, the coverage is
-# found with no configuration at all.
-DEFAULT_REPORT_COPY = "coverage-reports/coverage-timeslides.xml"
 
 
 def _report_completeness(path):
@@ -212,48 +151,6 @@ def _report_completeness(path):
     except (OSError, ET.ParseError):
         return None
     return len(list(root.iter("class"))), float(root.get("line-rate") or 0)
-
-
-def _publish_report(path) -> str:
-    """Keep both committed copies of the report in step, and never downgrade.
-
-    TWO PATHS, BECAUSE THREE CONFIGURATIONS HAVE TO WORK
-
-    ● the pipeline passes -Dsonar.python.coverage.reportPaths=coverage.xml on
-      the command line, which overrides both the properties file and the
-      plugin default, so a report has to exist at the repository root;
-    ● sonar-project.properties is read, and names both paths;
-    ● nothing is configured at all, and the plugin falls back to its default
-      pattern coverage-reports/*coverage-*.xml.
-
-    Committing both costs 120 KB and removes the guessing.
-
-    NEVER DOWNGRADE
-
-    pytest-cov rewrites coverage.xml on every run, including a run of one test
-    file. That report is a true statement about that run and a false one about
-    the project, and these files are committed, so a partial run must not
-    replace them. When the fresh report measures fewer files or covers less,
-    the committed content is put back instead, and the line printed below says
-    so. The terminal summary above it still shows what this run actually
-    measured.
-    """
-    import shutil
-    from pathlib import Path
-
-    target = Path(DEFAULT_REPORT_COPY)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fresh = _report_completeness(path)
-    if fresh is None:
-        return f"{target} left alone: the new report could not be read"
-    existing = _report_completeness(target) if target.exists() else None
-    if existing is not None and (fresh[0] < existing[0] or fresh[1] < existing[1]):
-        shutil.copyfile(target, path)
-        return (f"this run measured {fresh[0]} files at {fresh[1]:.0%}; the "
-                f"committed report has {existing[0]} at {existing[1]:.0%} and "
-                f"has been left in place. Run the whole suite to update it.")
-    shutil.copyfile(path, target)
-    return f"published to {path} and {target}, both committed"
 
 
 def _describe_report(path) -> list:
@@ -313,8 +210,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             write(f"  coverage xml              MISSING at {report}")
         else:
             write(f"  coverage xml              {report.resolve()}")
-            write(f"  {_normalise_source_roots(report)}")
-            write(f"  {_publish_report(report)}")
             for line in _describe_report(report):
                 write(line)
     except (OSError, ValueError) as exc:
@@ -338,3 +233,41 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     write(f"  SONAR_TOKEN               "
           f"{'set' if os.environ.get('SONAR_TOKEN') else 'not set'}")
     write("=" * 72)
+
+
+# --------------------------------------------------------------------------- #
+#  A file the ingest may not have carried
+#
+#  THE CHAIN THAT MATTERS
+#
+#  A failing test stage means GitLab uploads no artefacts, which means the scan
+#  stage receives no coverage report, which means the gate reads 0.0%. Two of
+#  the gate failures in this project's history are exactly that: the test stage
+#  failed, and the coverage number was collateral rather than the fault.
+#
+#  The first of those failures was a test asserting that
+#  sonar-project.properties exists. It is committed here and it was not in the
+#  pipeline's tree, so the ingest does not carry everything in an upload. Any
+#  test that reads a repository file can therefore fail for a reason that has
+#  nothing to do with the code, and take the coverage report down with it.
+#
+#  So a structural check whose subject is missing skips, loudly, naming the
+#  file. The reason is visible in the log and the suite still passes, so the
+#  artefact still ships. What must never skip is a check about the application
+#  itself; this is only for files that describe the repository.
+# --------------------------------------------------------------------------- #
+def repo_file(relative, why=""):
+    """Return the path, or skip this test saying which file is absent."""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / relative
+    if not path.exists():
+        import pytest as _pytest
+        _pytest.skip(
+            f"{relative} is not in this tree, so this check has no subject. "
+            "The App Store ingest does not carry every file in an upload: "
+            "sonar-project.properties is committed here and was absent from "
+            "the pipeline. Skipped rather than failed, because a failing test "
+            "stage uploads no artefacts and the coverage report never reaches "
+            f"the scan. {why}".strip())
+    return path

@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import repo_file
+
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "timeslides"
 ASSETS = PACKAGE / "report" / "assets"
@@ -377,7 +379,7 @@ def test_the_linter_only_looks_at_this_project_s_own_javascript():
     # comments and the string bodies are the whole point here. That works
     # because the stripper preserves length, which it promises in its
     # docstring and is asserted below.
-    raw = (ROOT / "eslint.config.mjs").read_text(encoding="utf-8")
+    raw = repo_file("eslint.config.mjs").read_text(encoding="utf-8")
     blanked = _strip_js_comments(raw)
     assert len(blanked) == len(raw)
     block = re.search(r"ignores:\s*\[(.*?)\]", blanked, re.DOTALL)

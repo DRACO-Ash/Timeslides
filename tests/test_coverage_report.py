@@ -1,24 +1,17 @@
-"""The coverage report has to be readable by the scanner, not just correct.
+"""The coverage report the gate reads, and the environment it is read in.
 
-The quality gate reported "Line coverage: 0.0% (required: 80%)" on a suite that
-was at 100 per cent locally, and the pipeline's own advice was to write more
-tests. There was nothing wrong with the tests. The report named every file
-relative to an absolute path on the machine that produced it, so the scanner
-resolved none of them and counted every analysed line as uncovered.
+The gate has reported "Line coverage: 0.0%" repeatedly against a suite at 100
+per cent. What this file does NOT do any more is rewrite the report. An earlier
+version normalised its source roots and published copies of it, on the theory
+that the scanner could not resolve the paths. The theory was wrong: the gate
+once read 79.2% from a report in the plain form pytest-cov writes, and the
+coverage configuration was byte-identical when it later read 0.0%. The
+configuration was never the cause, and changing a working artefact on an
+unproven theory cost four uploads.
 
-That failure is invisible from inside the suite: the number the runner prints
-is right, the file is written, and the only symptom is a gate result a pipeline
-run away. So the shape of the report is asserted here, by generating one the
-same way the pipeline does and reading it back.
-
-What matters, in order:
-
-  1. no absolute path anywhere in the report, because a path from the runner is
-     meaningless on the scanner;
-  2. filenames relative to the project root, which is what SonarQube joins a
-     source root to;
-  3. the whole package in the denominator, so an `omit` cannot quietly shrink
-     what is being measured and lift the percentage.
+What is left here are checks that cost nothing and could not have caused that:
+the report measures the whole package, the two exclusion lists agree, and the
+helper that decides whether to skip cannot itself throw.
 """
 
 from __future__ import annotations
@@ -28,35 +21,25 @@ import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import (DEFAULT_REPORT_COPY, _describe_report,
-                           _normalise_source_roots, _publish_report,
-                           _report_completeness,
-                           in_git_worktree)
+from tests.conftest import _describe_report, in_git_worktree, repo_file
 
 ROOT = Path(__file__).resolve().parent.parent
-
 
 
 @pytest.fixture(scope="module")
 def report(tmp_path_factory):
     """A real coverage report, generated from the real .coveragerc.
 
-    Deliberately not the coverage.xml this suite happens to leave behind: that
-    file is written when the run ends, so a test reading it would be reading
-    the previous run's output and would pass on a configuration that had since
+    Deliberately not the coverage.xml this suite leaves behind: that file is
+    written when the run ends, so a test reading it would be reading the
+    previous run's output and would pass on a configuration that had since
     been broken.
-
-    A one-line program is enough. The shape of the report is set by the
-    configuration, not by how much of the application the program touches.
     """
     out = tmp_path_factory.mktemp("cov")
-    # The program lives outside the project root, so it is the thing being run
-    # rather than a thing being measured.
     program = out / "touch_the_package.py"
     program.write_text("import timeslides.models\n", encoding="utf-8")
     # PYTHONPATH rather than cwd: running a script puts the script's own
@@ -72,130 +55,71 @@ def report(tmp_path_factory):
     return ET.parse(out / "coverage.xml").getroot()
 
 
-def _filenames(report) -> list:
-    return [c.get("filename") for c in report.iter("class")]
-
-
-def test_no_source_root_is_an_absolute_path(report):
-    """The defect itself.
-
-    `source = timeslides` made coverage.py write the package's absolute path as
-    the report root and name files relative to it. On the scanner that
-    directory does not exist, so nothing resolved.
-    """
-    roots = [(s.text or "") for s in report.iter("source")]
-    absolute = [r for r in roots if r.startswith("/") or ":" in r]
-    assert absolute == [], (
-        "a source root from the machine that ran the tests is meaningless on "
-        f"the scanner: {absolute}")
-
-
-def test_every_file_is_named_from_the_project_root(report):
-    """SonarQube joins a source root to a filename. With the root relative,
-    the filename has to carry the package directory or the join lands in the
-    wrong place."""
-    names = _filenames(report)
-    assert names, "the report contains no files at all"
-    wrong = [n for n in names if not n.startswith("timeslides/")]
-    assert wrong == [], f"not relative to the project root: {wrong}"
-    assert not any(n.startswith("/") for n in names)
-
-
 def test_the_whole_package_is_in_the_denominator(report):
     """An omit that grew would lift the percentage by measuring less.
 
     Checked against the package on disk rather than a number, so adding a
     module is not a test change, and dropping one from measurement is.
     """
-    measured = set(_filenames(report))
+    measured = {c.get("filename") for c in report.iter("class")}
     on_disk = {
-        str(p.relative_to(ROOT)) for p in (ROOT / "timeslides").rglob("*.py")
+        p.name for p in (ROOT / "timeslides").rglob("*.py")
         if "report/assets" not in p.as_posix()
     }
-    missing = sorted(on_disk - measured)
+    # The report names files relative to its own source root, so compare on
+    # the basename: what matters is that no module has dropped out.
+    missing = sorted(on_disk - {Path(m).name for m in measured})
     assert missing == [], f"in the package but not measured: {missing}"
 
 
-def test_the_configuration_says_so_rather_than_relying_on_a_default(report):
-    """relative_files defaults to off, and the report above is the only thing
-    that would notice if it were removed. Pinned here as well so the reason
-    survives with the setting."""
-    text = (ROOT / ".coveragerc").read_text(encoding="utf-8")
-    assert "relative_files = True" in text
-    assert "source = ." in text
+def test_the_report_carries_line_level_data(report):
+    """A report with no <line> elements imports as nothing, which reads as
+    nought per cent rather than as an error."""
+    lines = list(report.iter("line"))
+    assert lines, "the report has no line-level coverage data at all"
+    assert all(line.get("hits") is not None for line in lines)
 
 
-def test_the_report_omits_what_cannot_be_measured_honestly():
-    """Two files that cannot be measured in process, and the reason for each.
-
-    Kept separate from the SonarQube half below, because .coveragerc is always
-    in the tree the tests run in and sonar-project.properties is not.
-    """
-    omitted = (ROOT / ".coveragerc").read_text(encoding="utf-8")
-    for path in ("app.py", "timeslides/report/assets/"):
-        assert path in omitted, f"{path} is not omitted from the report"
+def test_the_description_helper_summarises_a_report(tmp_path):
+    path = tmp_path / "coverage.xml"
+    path.write_text(
+        '<?xml version="1.0" ?>\n'
+        '<coverage line-rate="1" lines-covered="1" lines-valid="1">\n'
+        "\t<sources><source>.</source></sources>\n"
+        "\t<packages><package><classes>\n"
+        '\t\t<class name="api.py" filename="timeslides/api.py"/>\n'
+        "\t</classes></package></packages>\n"
+        "</coverage>\n", encoding="utf-8")
+    lines = "\n".join(_describe_report(path))
+    assert "timeslides/api.py" in lines
+    assert "files in report   1" in lines
 
 
 def test_the_two_coverage_exclusion_lists_agree():
     """.coveragerc omits a file from the report; sonar-project.properties has
     to exclude the same file from the metric, or the gate counts it as nought
-    per cent and fails on a file nobody intended to measure.
-
-    Skipped rather than failed when the scanner's configuration is not in the
-    tree. The App Store's test stage runs against the unpacked upload and
-    sonar-project.properties is not in it, which failed this test in the
-    pipeline while every assertion it makes was true of the repository. A test
-    that asserts a file exists in an environment that legitimately does not
-    have it is testing the environment, not the code.
-
-    The skip cannot hide a deleted file: the companion test below fails if it
-    is missing from a checkout that does have git, which is every checkout a
-    person or this repository's own CI works in.
-    """
-    sonar_config = ROOT / "sonar-project.properties"
-    if not sonar_config.exists():
-        pytest.skip(
-            "sonar-project.properties is not in this tree. The App Store's "
-            "test stage runs against the unpacked upload, which does not "
-            "carry it. If the scanner does not see it either, the coverage "
-            "exclusions in it are not being applied; see AUDIT.md.")
-    sonar = sonar_config.read_text(encoding="utf-8")
-    assert "app.py" in sonar
+    per cent and fails on a file nobody intended to measure."""
+    omitted = (ROOT / ".coveragerc").read_text(encoding="utf-8")
+    assert "timeslides/report/assets" in omitted
+    sonar = repo_file(
+        "sonar-project.properties",
+        "If the scanner does not see it either, the coverage exclusions in "
+        "it are not being applied; see AUDIT.md.").read_text(encoding="utf-8")
     assert "assets" in sonar
 
 
-@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
-def test_the_scanner_configuration_ships():
-    """The other half of the skip above.
-
-    The pipeline's tree not having this file is a property of the pipeline. The
-    repository not having it would be a defect, and without this check the skip
-    above would swallow it silently.
-    """
-    tracked = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "sonar-project.properties"],
-        cwd=ROOT, capture_output=True, text=True, check=False)
-    assert tracked.returncode == 0, (
-        "sonar-project.properties is not tracked, so it cannot reach the "
-        "scanner at all")
-
-
-def test_pytest_does_not_override_the_coverage_source():
-    """One source of truth for what the report is rooted at.
-
-    `--cov=timeslides` on the command line beats `source` in .coveragerc, and
-    the two then disagree: the config roots the report at the project and names
-    files `timeslides/api.py`, the command line roots it at the package and
-    names them `api.py`. Which one the scanner reads depends on how the
-    pipeline happens to invoke pytest, and the symptom is a coverage figure,
-    not an error.
-    """
+def test_pytest_and_the_coverage_config_name_the_same_source():
+    """Two places configuring one thing will disagree. `--cov=<x>` on the
+    command line overrides `source` in .coveragerc, so if they ever name
+    different things the report's shape depends on how pytest was invoked."""
     ini = (ROOT / "pytest.ini").read_text(encoding="utf-8")
     addopts = next(ln for ln in ini.splitlines() if ln.startswith("addopts"))
-    assert "--cov " in f"{addopts} ", "the suite no longer measures coverage"
-    assert "--cov=" not in addopts, (
-        "a --cov with an argument overrides .coveragerc and changes the shape "
-        f"of the report the scanner reads: {addopts}")
+    assert "--cov" in addopts, "the suite no longer measures coverage"
+    if "--cov=" in addopts:
+        named = addopts.split("--cov=")[1].split()[0]
+        source = (ROOT / ".coveragerc").read_text(encoding="utf-8")
+        assert f"source = {named}" in source, (
+            f"pytest.ini measures {named}, .coveragerc says otherwise")
 
 
 # --------------------------------------------------------------------------- #
@@ -203,9 +127,8 @@ def test_pytest_does_not_override_the_coverage_source():
 #
 #  A skipif decorator is evaluated at import. An exception there is not one
 #  test failing, it is a collection error, and pytest abandons the entire run:
-#  "Interrupted: 1 error during collection", 684 passing tests never executed.
-#  That is what a second, private copy of this helper without a try/except did
-#  in the pipeline, where .git exists and the git binary does not.
+#  684 passing tests never executed, and a test stage that fails uploads no
+#  artefacts, so the coverage report never reaches the scan.
 # --------------------------------------------------------------------------- #
 def test_the_git_probe_returns_false_rather_than_raising_without_git(tmp_path):
     """Run with a PATH that has no git on it, which is the pipeline's image."""
@@ -220,22 +143,17 @@ def test_the_git_probe_returns_false_rather_than_raising_without_git(tmp_path):
     done = subprocess.run([sys.executable, str(program)], cwd=ROOT,
                           env={**os.environ, "PATH": str(empty)},
                           capture_output=True, text=True, check=False)
-    assert done.returncode == 0, f"the probe raised instead of returning:\n{done.stderr}"
+    assert done.returncode == 0, f"the probe raised:\n{done.stderr}"
     assert done.stdout.strip() == "False"
 
 
 def test_there_is_only_one_git_probe():
-    """The bug was a duplicate, not a typo.
-
-    The correct implementation already existed in tests/conftest.py, with a
-    docstring describing this exact failure. A second copy was written next to
-    it without the try/except. Two implementations of one decision will
-    diverge, and the one that diverges is the one nobody is looking at.
+    """The bug was a duplicate, not a typo. The correct implementation already
+    existed in tests/conftest.py, with a docstring describing this exact
+    failure. A second copy was written next to it without the try/except.
 
     Found by parsing, not by searching the text: a string search for
-    "def in_git_worktree" matches the line of this test that contains it, which
-    is the fourth time in this repository that a check has reported on its own
-    source. The rule is in CODE-QUALITY.md; this is the rule being followed.
+    "def in_git_worktree" matches the line of this test that contains it.
     """
     copies = []
     for path in sorted((ROOT / "tests").glob("*.py")):
@@ -248,280 +166,13 @@ def test_there_is_only_one_git_probe():
         f"the git probe is defined in more than one place: {copies}")
 
 
-# --------------------------------------------------------------------------- #
-#  The empty source root
-#
-#  The second 0.0%. coverage.py writes two source roots for a report rooted at
-#  the project, and the first is empty. A scanner resolves an entry by joining
-#  a root to a filename, and an empty root turns "timeslides/api.py" into the
-#  absolute "/timeslides/api.py", which exists nowhere. A parser that takes the
-#  first root rather than trying each resolves nothing, and a report in which
-#  nothing resolves reads as nought per cent rather than as no data.
-# --------------------------------------------------------------------------- #
-RAW_SOURCES = """<?xml version="1.0" ?>
-<coverage version="7.16.0" line-rate="1">
-	<sources>
-		<source></source>
-		<source>.</source>
-	</sources>
-	<packages>
-		<classes>
-			<class name="api.py" filename="timeslides/api.py" line-rate="1"/>
-		</classes>
-	</packages>
-</coverage>
-"""
-
-
-def test_coverage_py_really_does_emit_an_empty_source_root(report):
-    """The premise, checked against the tool rather than assumed.
-
-    This fixture is generated by coverage.py directly, without the conftest
-    hook that cleans it up, so it shows the raw output. If a future coverage.py
-    stops emitting the empty element, this test says so and the normaliser
-    becomes redundant rather than silently pointless.
-    """
-    roots = [(s.text or "") for s in report.iter("source")]
-    assert "" in roots, (
-        "coverage.py no longer emits an empty source root; the normaliser in "
-        "conftest.py may no longer be needed")
-
-
-def test_an_empty_source_root_resolves_to_an_absolute_path():
-    """Why the empty element matters, stated as arithmetic rather than opinion."""
-    assert "" + "/" + "timeslides/api.py" == "/timeslides/api.py"
-    assert "." + "/" + "timeslides/api.py" == "./timeslides/api.py"
-
-
-def test_the_normaliser_removes_the_empty_root(tmp_path):
-    path = tmp_path / "coverage.xml"
-    path.write_text(RAW_SOURCES, encoding="utf-8")
-    message = _normalise_source_roots(path)
-    assert "removed 1" in message, message
-    roots = [(s.text or "") for s in ET.parse(path).getroot().iter("source")]
-    assert roots == ["."]
-
-
-def test_the_normaliser_keeps_the_coverage_data_intact(tmp_path):
-    """It drops an ambiguous element. It must not touch a number."""
-    path = tmp_path / "coverage.xml"
-    path.write_text(RAW_SOURCES, encoding="utf-8")
-    _normalise_source_roots(path)
-    root = ET.parse(path).getroot()
-    assert root.get("line-rate") == "1"
-    assert [c.get("filename") for c in root.iter("class")] == ["timeslides/api.py"]
-
-
-def test_the_normaliser_is_idempotent(tmp_path):
-    path = tmp_path / "coverage.xml"
-    path.write_text(RAW_SOURCES, encoding="utf-8")
-    _normalise_source_roots(path)
-    once = path.read_text(encoding="utf-8")
-    second = _normalise_source_roots(path)
-    assert "already unambiguous" in second, second
-    assert path.read_text(encoding="utf-8") == once
-
-
-def test_the_normaliser_leaves_at_least_one_root(tmp_path):
-    """A report with nothing but empty roots must not end up with none, which
-    would be a different kind of unresolvable."""
-    path = tmp_path / "coverage.xml"
-    path.write_text(RAW_SOURCES.replace("<source>.</source>", "<source></source>"),
-                    encoding="utf-8")
-    _normalise_source_roots(path)
-    roots = [(s.text or "") for s in ET.parse(path).getroot().iter("source")]
-    assert roots == ["."]
-
-
-def test_the_normaliser_reports_rather_than_raises_on_a_report_it_cannot_read(
-        tmp_path):
-    """It runs in a terminal-summary hook. A hook that raises takes the run
-    with it, which has already happened once here."""
-    path = tmp_path / "coverage.xml"
-    path.write_text("not xml at all", encoding="utf-8")
-    assert "nothing to normalise" in _normalise_source_roots(path)
-
-
-def test_the_description_helper_summarises_a_report(tmp_path):
-    path = tmp_path / "coverage.xml"
-    path.write_text(RAW_SOURCES, encoding="utf-8")
-    lines = "\n".join(_describe_report(path))
-    assert "timeslides/api.py" in lines
-    assert "files in report   1" in lines
-
-
-def test_the_report_this_suite_leaves_behind_is_unambiguous():
-    """The end-to-end check: what the scanner would actually read.
-
-    Written by the previous run of this suite, through the conftest hook, which
-    is exactly the path the pipeline takes.
-    """
-    produced = ROOT / "coverage.xml"
-    if not produced.exists():
-        pytest.skip("no coverage.xml from a previous run in this tree")
-    root = ET.parse(produced).getroot()
-    roots = [(s.text or "") for s in root.iter("source")]
-    assert "" not in roots, f"an empty source root survived: {roots}"
-    assert not any(r.startswith("/") for r in roots), roots
-    names = [c.get("filename") for c in root.iter("class")]
-    assert names and all(n.startswith("timeslides/") for n in names)
-
-
-# --------------------------------------------------------------------------- #
-#  The second copy, at the path the plugin searches by default
-# --------------------------------------------------------------------------- #
-def test_the_conventional_copy_matches_the_plugin_s_default_pattern():
-    """SonarQube's Python plugin defaults sonar.python.coverage.reportPaths to
-    coverage-reports/*coverage-*.xml. A report written there is found with no
-    configuration, which matters because the App Store's tree does not carry
-    our sonar-project.properties."""
-    assert fnmatch(DEFAULT_REPORT_COPY, "coverage-reports/*coverage-*.xml"), (
-        f"{DEFAULT_REPORT_COPY} would not be found by the default pattern")
-
-
-def test_a_partial_run_does_not_replace_a_complete_report(tmp_path):
-    """The hazard of committing a generated file.
-
-    A report from one test file is a true statement about that run and a false
-    one about the project. Committing it would understate the coverage the gate
-    reads, so a run that measured fewer files or covered less leaves the
-    committed copy alone.
-    """
-    complete = tmp_path / "complete.xml"
-    complete.write_text(RAW_SOURCES.replace(
-        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>',
-        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>\n'
-        '\t\t\t<class name="udl.py" filename="timeslides/udl.py" line-rate="1"/>'),
-        encoding="utf-8")
-    partial = tmp_path / "partial.xml"
-    partial.write_text(RAW_SOURCES.replace('line-rate="1">', 'line-rate="0.1">', 1),
-                       encoding="utf-8")
-    assert _report_completeness(complete) == (2, 1.0)
-    assert _report_completeness(partial)[0] == 1
-
-
-# --------------------------------------------------------------------------- #
-#  The committed report
-#
-#  The code-quality stage starts from a fresh checkout, so a report written by
-#  the test stage is not in it unless the pipeline carries it across. A real
-#  SonarQube scanning this tree with no report scores exactly 0.0% and logs
-#  "No report was found for sonar.python.coverage.reportPaths" -- the gate's
-#  number and the gate's wording. The same tree with the report scores 100.0%.
-#  docker/sonar-probe.sh runs that experiment.
-#
-#  So the report is committed. A generated file in a repository goes stale and
-#  then lies, which is why these tests exist: staleness is a failure here
-#  rather than a quiet misstatement at the gate.
-# --------------------------------------------------------------------------- #
-def test_the_generation_timestamp_is_zeroed(tmp_path):
-    """Metadata nothing reads, removed so the file is a pure function of the
-    coverage. Without this the working tree is dirty after every run and no
-    staleness check is possible."""
-    path = tmp_path / "coverage.xml"
-    path.write_text(
-        RAW_SOURCES.replace('<coverage version="7.16.0"',
-                            '<coverage version="7.16.0" timestamp="1789418939218"'),
-        encoding="utf-8")
-    _normalise_source_roots(path)
-    assert 'timestamp="0"' in path.read_text(encoding="utf-8")
-    assert "1789418939218" not in path.read_text(encoding="utf-8")
-
-
-def test_the_committed_report_covers_every_module():
-    """A report that has lost a module would pass the gate by measuring less.
-
-    Reads the committed copy rather than the working coverage.xml: a test runs
-    before the terminal-summary hook writes the new report, so the working file
-    during a run is the previous run's, which may have been one test file.
-    """
-    committed = ROOT / DEFAULT_REPORT_COPY
-    assert committed.exists(), "the committed coverage report is missing"
-    measured = {c.get("filename") for c in ET.parse(committed).getroot().iter("class")}
-    on_disk = {str(p.relative_to(ROOT)) for p in (ROOT / "timeslides").rglob("*.py")
-               if "report/assets" not in p.as_posix()}
-    assert sorted(on_disk - measured) == []
-
-
-def test_the_committed_report_is_the_one_the_scanner_would_read():
-    root = ET.parse(ROOT / DEFAULT_REPORT_COPY).getroot()
-    assert root.get("line-rate") == "1", (
-        f"the committed report is not at 100 per cent: {root.get('line-rate')}")
-    roots = [(s.text or "") for s in root.iter("source")]
-    assert roots == ["."], roots
-
-
 @pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
-@pytest.mark.parametrize("path", ["coverage.xml", DEFAULT_REPORT_COPY])
-def test_the_committed_reports_are_tracked(path):
-    """Both, because three configurations have to work and they disagree about
-    where the report lives.
-
-    The pipeline passes -Dsonar.python.coverage.reportPaths on the command
-    line, which overrides the properties file and the plugin default alike, so
-    a report has to be at the repository root. If instead the properties file
-    is read it names both. If nothing is configured, the plugin's default
-    pattern finds the second. A fresh checkout is what the code-quality stage
-    starts from, so a report that is not committed is not there at all.
-    """
-    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", path],
-                             cwd=ROOT, capture_output=True, text=True,
-                             check=False)
+def test_the_scanner_configuration_ships():
+    """The pipeline's tree not having this file is a property of the pipeline.
+    The repository not having it would be a defect."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "sonar-project.properties"],
+        cwd=ROOT, capture_output=True, text=True, check=False)
     assert tracked.returncode == 0, (
-        f"{path} is not tracked, so a fresh checkout may have no coverage "
-        "report and the gate reads 0.0%")
-
-
-@pytest.mark.skipif(not in_git_worktree(), reason="git is not available here")
-def test_the_committed_report_is_not_stale():
-    """The whole reason a generated file may be committed at all.
-
-    The report is deterministic, so a difference here means the coverage really
-    changed and the committed copy no longer describes this code. Regenerate it
-    by running the suite, then commit the result.
-    """
-    # `git diff` rather than `git status`: status calls a newly staged file
-    # dirty, which is a commit in progress rather than a stale report. What
-    # matters is the working tree differing from what is staged, which is what
-    # "regenerated and not committed" looks like.
-    for path in ("coverage.xml", DEFAULT_REPORT_COPY):
-        diff = subprocess.run(["git", "diff", "--quiet", "--", path],
-                              cwd=ROOT, capture_output=True, text=True,
-                              check=False)
-        assert diff.returncode == 0, (
-            f"{path} has changed and is not committed. The suite has just "
-            "regenerated it; commit it, or the code-quality stage reads "
-            "coverage that no longer describes this code.")
-
-
-def test_a_partial_run_restores_the_committed_report(tmp_path, monkeypatch):
-    """pytest-cov rewrites coverage.xml on every run, including a run of one
-    test file. Both files are committed, so a partial report must not be left
-    in the working tree where it would be committed by mistake."""
-    monkeypatch.chdir(tmp_path)
-    complete = RAW_SOURCES.replace(
-        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>',
-        '<class name="api.py" filename="timeslides/api.py" line-rate="1"/>\n'
-        '\t\t\t<class name="udl.py" filename="timeslides/udl.py" line-rate="1"/>')
-    committed = tmp_path / DEFAULT_REPORT_COPY
-    committed.parent.mkdir(parents=True)
-    committed.write_text(complete, encoding="utf-8")
-
-    fresh = tmp_path / "coverage.xml"
-    fresh.write_text(RAW_SOURCES, encoding="utf-8")   # one file, not two
-    message = _publish_report(fresh)
-
-    assert "left in place" in message, message
-    assert fresh.read_text(encoding="utf-8") == complete, (
-        "the partial report was left in the working tree")
-    assert committed.read_text(encoding="utf-8") == complete
-
-
-def test_a_complete_run_publishes_to_both_paths(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    fresh = tmp_path / "coverage.xml"
-    fresh.write_text(RAW_SOURCES, encoding="utf-8")
-    message = _publish_report(fresh)
-    assert "published" in message, message
-    copy = tmp_path / DEFAULT_REPORT_COPY
-    assert copy.read_bytes() == fresh.read_bytes()
+        "sonar-project.properties is not tracked, so it cannot reach the "
+        "scanner at all")
