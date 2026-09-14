@@ -477,6 +477,63 @@ version used an empty `PATH` and failed twelve tests that need `find` and
 so it now links the whole userland except git and checks that git really is
 unreachable before drawing any conclusion from a pass.
 
+### The second 0.0%, and what was actually in the report
+
+The path fix worked and the gate still said `Line coverage is 0.0%`. That
+number is not a low score. It is the signature of a report in which **nothing
+resolved**, and there were two ways for that to happen.
+
+**Found and fixed: an empty source root.** coverage.py writes two source roots
+for a report rooted at the project:
+
+    <sources><source></source><source>.</source></sources>
+
+The first is empty. A scanner resolves a coverage entry by joining a source
+root to a filename, and joining an empty root to `timeslides/api.py` gives
+`/timeslides/api.py`, an absolute path that exists nowhere. A parser that takes
+the first root rather than trying each therefore resolves no file at all. The
+suite now removes the empty element after the report is written, leaving
+exactly one root, `.`, which resolves under both parser behaviours: joined to
+the filename it gives the right relative path, and a parser that ignores
+`<sources>` entirely resolves the same filename against the project directory.
+No coverage data is touched; an ambiguous element is dropped. Nine tests cover
+it, including one that checks coverage.py still emits the empty root, so if a
+future version stops doing so the normaliser is reported as redundant rather
+than left in place pointlessly.
+
+**Hedged, and labelled as a hedge: the report may never be read at all.** If
+the scanner runs without our `sonar-project.properties`, which the App Store's
+tree demonstrably does not contain, then no `sonar.python.coverage.reportPaths`
+is set, no report is read, and every analysed line counts as uncovered -- which
+is the same 0.0%. SonarQube's Python plugin has long defaulted that property to
+`coverage-reports/*coverage-*.xml`, so the same report is now also written to
+`coverage-reports/coverage-timeslides.xml`. **This is a hypothesis about the
+scanner's configuration, not a fact about it.** If the default is not what it
+is believed to be, the cost is one unread copy of a 300 KB file. If it is, the
+coverage is found with no configuration at all.
+
+**And the pipeline is no longer invisible.** Every run of the suite now prints
+an environment block into the test stage's log, which is the one part of the
+platform we can see. It states the working directory, which of the repository's
+configuration files are actually present, whether git exists, and the resolved
+shape of the coverage report it just wrote. Run against the simulated App Store
+tree it prints exactly what the pipeline should:
+
+    sonar-project.properties  ABSENT
+    .git                      ABSENT
+    git binary                ABSENT or not a work tree
+    removed 1 empty source root(s); kept ['.']
+    also written to coverage-reports/coverage-timeslides.xml
+    line-rate         1 (1614 of 1614 lines)
+    source roots      ['.']
+    absolute paths    0
+
+The next pipeline run therefore answers the remaining question from its own
+log. If it prints `sonar-project.properties ABSENT` and the gate still reports
+0.0%, the report is correct and unambiguous and the scanner is not reading it,
+which is configuration on the platform side and nothing that can be fixed in
+this repository.
+
 ### Open risk: the scanner may never see sonar-project.properties
 
 **Fact.** The App Store's test stage runs in `/builds/.../timeslides` and

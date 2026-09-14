@@ -30,3 +30,7 @@ build/
 /data/
 runs/
 phase_offset_*.html
+
+# A second copy of the coverage report, written at the path SonarQube
+# searches by default. Generated, not source.
+coverage-reports/

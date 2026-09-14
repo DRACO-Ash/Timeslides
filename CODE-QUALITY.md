@@ -205,6 +205,19 @@ runs the suite the way the platform does -- unpacked tree, no `.git`, no
 `sonar-project.properties`, no git binary -- and is in the verification loop.
 It was itself verified by reverting the defect and confirming it goes red.
 
+**An artefact handed to another tool must be unambiguous, not merely correct.**
+The coverage report was correct: right numbers, relative paths, every file
+present. It also carried an empty `<source>` element ahead of the real one, and
+a consumer that takes the first root resolves every file to a path that does
+not exist. Correct-but-ambiguous reads downstream as wrong, and in this case it
+read as nought per cent, which is indistinguishable from having no tests. When
+a format allows two readings, emit the one reading.
+
+**A hedge must be labelled as a hedge.** Writing the report to the path the
+scanner searches by default is a guess about configuration we cannot see. It is
+in the code with the word hypothesis attached and the cost of being wrong
+stated, so nobody later reads it as something that was verified.
+
 **A test that passes on a clean repository is exactly what a broken detector
 also does.** Every detector in `tests/test_code_standards.py` is therefore a
 named function, shown both the offender it was written for and the lookalike it
