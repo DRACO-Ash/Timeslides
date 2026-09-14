@@ -292,10 +292,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
     try:
         write(f"  working directory {Path.cwd()}")
+        # Every file this app commits that the scan needs. sonar-project.
+        # properties is committed here and was ABSENT from the pipeline's tree,
+        # which is how we know the ingest does not carry everything in the
+        # upload. These lines say whether the coverage reports survived it.
         for name in ("pytest.ini", ".coveragerc", "sonar-project.properties",
+                     "coverage.xml", DEFAULT_REPORT_COPY,
                      "requirements.txt", "Dockerfile", ".git"):
-            write(f"  {name:25} {'present' if Path(name).exists() else 'ABSENT'}")
-        write(f"  {'git binary':25} "
+            write(f"  {name:38} {'present' if Path(name).exists() else 'ABSENT'}")
+        write(f"  {'git binary':38} "
               f"{'present' if in_git_worktree() else 'ABSENT or not a work tree'}")
     except OSError as exc:
         write(f"  could not inspect the working directory: {exc}")
