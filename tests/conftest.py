@@ -153,6 +153,43 @@ def _report_completeness(path):
     return len(list(root.iter("class"))), float(root.get("line-rate") or 0)
 
 
+def _strip_empty_source_roots(path) -> str:
+    """Drop empty <source> elements. Returns a line describing what happened.
+
+    coverage.py writes two source roots for a report rooted at the project:
+
+        <sources><source></source><source>.</source></sources>
+
+    The first is empty. A scanner resolves a coverage entry by joining a source
+    root to a filename, and joining an empty root to `timeslides/api.py` gives
+    `/timeslides/api.py`, an absolute path that exists nowhere. A parser that
+    takes the first root rather than trying each resolves no file at all, and a
+    report in which nothing resolves does not read as "no data": every analysed
+    file is marked uncovered and the gate reports 0.0%.
+
+    So the empty element is dropped, leaving exactly one root, ".". That
+    resolves under both parser behaviours: joined to the filename it gives the
+    right relative path, and a parser that ignores <sources> entirely resolves
+    the same filename against the project directory. No coverage data is
+    altered. This is the exact shape a real SonarQube reported 100.0% from.
+    """
+    import re
+
+    text = path.read_text(encoding="utf-8")
+    block = re.search(r"<sources>.*?</sources>", text, re.DOTALL)
+    if not block:
+        return "no <sources> block; nothing to normalise"
+    roots = re.findall(r"<source>(.*?)</source>", block.group(0), re.DOTALL)
+    kept = [r for r in roots if r.strip()] or ["."]
+    if kept == roots:
+        return f"source roots already unambiguous: {kept}"
+    rebuilt = ("<sources>\n\t\t"
+               + "\n\t\t".join(f"<source>{r}</source>" for r in kept)
+               + "\n\t</sources>")
+    path.write_text(text.replace(block.group(0), rebuilt, 1), encoding="utf-8")
+    return f"removed {len(roots) - len(kept)} empty source root(s); kept {kept}"
+
+
 def _describe_report(path) -> list:
     import xml.etree.ElementTree as ET
 
@@ -210,6 +247,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             write(f"  coverage xml              MISSING at {report}")
         else:
             write(f"  coverage xml              {report.resolve()}")
+            write(f"  {_strip_empty_source_roots(report)}")
             for line in _describe_report(report):
                 write(line)
     except (OSError, ValueError) as exc:

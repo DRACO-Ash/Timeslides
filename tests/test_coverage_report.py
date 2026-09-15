@@ -25,7 +25,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import _describe_report, in_git_worktree, repo_file
+from tests.conftest import (_describe_report, _strip_empty_source_roots,
+                           in_git_worktree, repo_file)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,6 +56,64 @@ def report(tmp_path_factory):
     return ET.parse(out / "coverage.xml").getroot()
 
 
+RAW_SOURCES = """<?xml version="1.0" ?>
+<coverage version="7.16.0" line-rate="1">
+	<sources>
+		<source></source>
+		<source>.</source>
+	</sources>
+	<packages><package><classes>
+		<class name="api.py" filename="timeslides/api.py" line-rate="1"/>
+	</classes></package></packages>
+</coverage>
+"""
+
+
+def test_the_report_is_rooted_at_the_project_not_the_package(report):
+    """The defect that produced 0.0%.
+
+    `source = timeslides` roots the report at the package, so it writes an
+    absolute path belonging to the machine that ran the tests and names files
+    `api.py`. The scanner joins the two and has to land on a file it analysed;
+    when the scan runs anywhere else, nothing matches and every analysed file
+    is marked uncovered.
+    """
+    roots = [(s.text or "") for s in report.iter("source")]
+    assert not any(r.startswith("/") for r in roots), (
+        f"an absolute source root belongs to one machine only: {roots}")
+    names = [c.get("filename") for c in report.iter("class")]
+    assert names and all(n.startswith("timeslides/") for n in names), (
+        f"files must be named from the project root, not the package: {names[:3]}")
+
+
+def test_the_empty_source_root_is_removed(tmp_path):
+    """coverage.py emits an empty <source> ahead of the real one. Joined to a
+    filename it gives an absolute path that exists nowhere, so a parser taking
+    the first root resolves nothing."""
+    path = tmp_path / "coverage.xml"
+    path.write_text(RAW_SOURCES, encoding="utf-8")
+    assert "removed 1" in _strip_empty_source_roots(path)
+    roots = [(s.text or "") for s in ET.parse(path).getroot().iter("source")]
+    assert roots == ["."]
+
+
+def test_the_strip_keeps_the_coverage_data_intact(tmp_path):
+    path = tmp_path / "coverage.xml"
+    path.write_text(RAW_SOURCES, encoding="utf-8")
+    _strip_empty_source_roots(path)
+    root = ET.parse(path).getroot()
+    assert root.get("line-rate") == "1"
+    assert [c.get("filename") for c in root.iter("class")] == ["timeslides/api.py"]
+
+
+def test_the_strip_reports_rather_than_raises_on_an_unreadable_report(tmp_path):
+    """It runs in a terminal-summary hook, and a hook that raises takes the
+    whole run with it, which has already happened once here."""
+    path = tmp_path / "coverage.xml"
+    path.write_text("not xml at all", encoding="utf-8")
+    assert "nothing to normalise" in _strip_empty_source_roots(path)
+
+
 def test_the_whole_package_is_in_the_denominator(report):
     """An omit that grew would lift the percentage by measuring less.
 
@@ -63,12 +122,10 @@ def test_the_whole_package_is_in_the_denominator(report):
     """
     measured = {c.get("filename") for c in report.iter("class")}
     on_disk = {
-        p.name for p in (ROOT / "timeslides").rglob("*.py")
+        str(p.relative_to(ROOT)) for p in (ROOT / "timeslides").rglob("*.py")
         if "report/assets" not in p.as_posix()
     }
-    # The report names files relative to its own source root, so compare on
-    # the basename: what matters is that no module has dropped out.
-    missing = sorted(on_disk - {Path(m).name for m in measured})
+    missing = sorted(on_disk - measured)
     assert missing == [], f"in the package but not measured: {missing}"
 
 
