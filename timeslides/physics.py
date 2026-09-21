@@ -184,7 +184,19 @@ def along_track_offsets(r_obs: np.ndarray, r_ref: np.ndarray,
 # --------------------------------------------------------------------------- #
 def reference_satrec(objects, ref_sat_no, ref_epoch):
     """Build the single common reference orbit used for the whole waterfall.
-    Default: earliest TLE of the reference object; or nearest to ref_epoch."""
+
+    Default: the LATEST element set of the reference object, or the one nearest
+    ref_epoch when an epoch is asked for.
+
+    Latest, not earliest. The reference is the datum every offset on the plot
+    is measured from, so it should be the best current knowledge of where the
+    reference object is. Anchoring on the earliest element set in the window
+    means propagating the oldest orbit forward across the whole window, and
+    SGP4 error grows with time since epoch, so the further right the plot goes
+    the more of the drift belongs to the reference rather than to the object
+    being measured. Every series then carries that error in common, which
+    looks like real relative motion and is not.
+    """
     ref_obj = next((o for o in objects if o.sat_no == ref_sat_no), None)
     if ref_obj is None:
         raise ComputeError(f"reference sat {ref_sat_no} is not among the loaded objects")
@@ -193,7 +205,7 @@ def reference_satrec(objects, ref_sat_no, ref_epoch):
             f"reference sat {ref_sat_no} has no TLEs to anchor the reference orbit")
     ref_obj.elsets.sort(key=lambda e: e.epoch)
     if ref_epoch is None:
-        ref = ref_obj.elsets[0]
+        ref = ref_obj.elsets[-1]   # sorted ascending above, so this is latest
     else:
         ref = min(ref_obj.elsets, key=lambda e: abs((e.epoch - ref_epoch).total_seconds()))
     return ref.satrec()

@@ -19,6 +19,14 @@ alone has already cost several more.
   and bare filenames; the scanner then resolves nothing and the gate reports
   0.0%. Verified on a real SonarQube: project-rooted gives 100.0%,
   package-rooted gives 0.0%. `docker/sonar-probe.sh` reruns that experiment.
+● **The reference orbit is the LATEST element set of the reference object**,
+  not the earliest. It is the datum every offset is measured from, so it must
+  be the best current knowledge. Anchoring on the earliest propagates the
+  oldest orbit across the whole window, and SGP4 error grows with time since
+  epoch, so drift belonging to the reference appears in every series at once
+  and reads as real relative motion. `demo.py` must advance each element set's
+  angles with SGP4's own secular rates (`mdot`, `argpdot`, `nodedot`) or the
+  synthetic reference does not sit at zero against itself.
 ● **Credentials come from the environment.** `UDL_USER` and `UDL_PASS`, never a
   file in the repo. The application fails closed at import without them.
 ● **The client-side code stays in separate `.js` and `.css` files** so the gate

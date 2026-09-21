@@ -49,8 +49,9 @@ def _tle_lines(sat) -> tuple[str, str]:
 
 
 def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=None):
-    """A self-consistent synthetic object: its states AND its TLEs both track its
-    own orbit, so it sits near zero against its own reference. Objects differ only
+    """A self-consistent synthetic object: its states AND every one of its TLEs
+    track its own orbit, so it sits near zero against its own reference
+    whichever element set the reference is taken from. Objects differ only
     in mean motion, so re-anchoring on any of them shifts the others coherently.
     Generates a series for every configured state-vector provider so the source
     controls, the marker shapes and the legend are all exercised without a
@@ -78,13 +79,28 @@ def _make_demo_object(sat_no, name, start, end, n_rev_day, ma0, rng, sources=Non
                                    created=t.strftime("%Y-%m-%dT%H:%M:%SZ")))
         obj.state_series[key] = svs
 
-    n_rad_min = n_rev_day * 2 * math.pi / 1440.0
+    # Each element set is the SAME orbit re-stated at a later epoch, so its
+    # angles have to be advanced the way SGP4 itself advances them: with the
+    # secular rates it derives from J2, which sgp4 exposes on the satrec as
+    # mdot, argpdot and nodedot.
+    #
+    # An earlier version advanced the mean anomaly with a naive n*t and held
+    # the argument of perigee and the right ascension fixed. That is not the
+    # same orbit: over a seven-day window the last element set disagreed with
+    # the object's own states by 73 seconds, measured. It went unnoticed while
+    # the reference orbit was taken from the FIRST element set, because the
+    # first one is the base orbit and matches by construction. The moment the
+    # reference became the latest element set, which is what it should always
+    # have been, the demo's own reference object sat 73 seconds from zero
+    # against itself. Using SGP4's rates brings that to 0.001 seconds.
     n_tle = max(3, int(window_s / 86400 * 1.5))
     for i in range(n_tle):
         t = start + dt.timedelta(seconds=window_s * i / (n_tle - 1))
         minutes = (t - start).total_seconds() / 60.0
-        ma_t = (ma0 + math.degrees(n_rad_min * minutes)) % 360.0
-        s = _make_satrec(t, n_rev_day, 0.0008, 53.0, 120.0, 30.0,
+        ma_t = (ma0 + math.degrees(sat.mdot * minutes)) % 360.0
+        argp_t = (30.0 + math.degrees(sat.argpdot * minutes)) % 360.0
+        raan_t = (120.0 + math.degrees(sat.nodedot * minutes)) % 360.0
+        s = _make_satrec(t, n_rev_day, 0.0008, 53.0, raan_t, argp_t,
                          ma_t + rng.normal(0, 0.002), sat_no)
         l1, l2 = _tle_lines(s)
         # Two originators, alternating, because that is what the real feed

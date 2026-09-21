@@ -176,12 +176,29 @@ def test_empty_inputs_do_not_explode():
 # --------------------------------------------------------------------------- #
 #  Reference orbit selection and failure modes
 # --------------------------------------------------------------------------- #
-def test_reference_orbit_defaults_to_earliest_tle(demo_objects):
+def test_reference_orbit_defaults_to_the_latest_tle(demo_objects):
+    """Latest, not earliest.
+
+    The reference is the datum every offset is measured from, so it should be
+    the best current knowledge of the reference object's orbit. Anchoring on
+    the earliest element set propagates the oldest orbit across the whole
+    window, and SGP4 error grows with time since epoch, so drift that belongs
+    to the reference appears in every series at once and reads as real
+    relative motion.
+    """
     obj = next(o for o in demo_objects if o.sat_no == 59884)
-    earliest = min(e.epoch for e in obj.elsets)
+    latest = max(e.epoch for e in obj.elsets)
     sat = physics.reference_satrec(demo_objects, 59884, None)
-    expected = next(e for e in obj.elsets if e.epoch == earliest).satrec()
+    expected = next(e for e in obj.elsets if e.epoch == latest).satrec()
     assert sat.jdsatepoch == expected.jdsatepoch
+
+
+def test_the_latest_reference_tle_is_not_the_earliest(demo_objects):
+    """Guards the test above against a fixture where the two coincide, which
+    would let the earliest-element-set behaviour pass unnoticed."""
+    obj = next(o for o in demo_objects if o.sat_no == 59884)
+    epochs = sorted(e.epoch for e in obj.elsets)
+    assert len(epochs) > 1 and epochs[0] != epochs[-1]
 
 
 def test_reference_orbit_honours_a_requested_epoch(demo_objects):
@@ -233,24 +250,38 @@ def test_reference_object_sits_near_zero_against_itself(demo_objects, ref_sat):
         assert max(abs(p[1]) for p in other_series[key]) > 50.0, key
 
 
-def test_demo_tle_series_drifts_because_of_the_tle_text_round_trip(demo_objects, ref_sat):
-    """Documents a property of the demo generator that otherwise reads as a bug.
+def test_the_reference_object_sits_near_zero_on_every_series(demo_objects, ref_sat):
+    """Including its own element sets, which it did not before.
 
-    The demo builds each element set by exporting a Satrec to TLE text. The
-    two-line format carries mean motion to eight decimal places, so the
-    exported and re-imported orbit differs from the one that produced it by a
-    hair. Over a seven-day window that truncation integrates into tens of
-    seconds of along-track offset, so the reference object's own TLE series
-    drifts away from zero while its state-vector series, which never go
-    through TLE text, stay under 20 milliseconds.
+    This test used to assert the opposite: that the element-set series drifted
+    past a second, blamed on the TLE text round trip. That explanation was
+    wrong. The demo advanced each later element set's mean anomaly with a naive
+    n*t and held the argument of perigee and right ascension fixed, so the
+    later element sets described a slightly different orbit from the states.
+    Measured at 73 seconds by the end of a seven-day window.
 
-    This is the synthetic data, not the maths. Live element sets come from the
-    UDL as text and never make this round trip.
+    It was invisible while the reference orbit came from the FIRST element set,
+    which is the base orbit and matches by construction. Taking the reference
+    from the latest element set, which is what a datum should be, exposed it.
+    The demo now advances the angles with the secular rates SGP4 itself derives
+    from J2, so every element set is the same orbit re-stated.
+
+    The residual is the TLE text round trip and the deliberate 0.002 degree
+    jitter, which together come to under a tenth of a second.
     """
     ref = next(o for o in demo_objects if o.sat_no == 59884)
     series = physics.compute_series(ref, ref_sat, False)
-    assert max(abs(p[1]) for p in series[ELSET_KEY]) > 1.0
-    assert max(abs(p[1]) for p in series["leolabs"]) < 0.5
+    for key, points in series.items():
+        if points:
+            assert max(abs(p[1]) for p in points) < 0.5, key
+
+
+def test_a_drifting_object_is_still_far_from_zero(demo_objects, ref_sat):
+    """The other half. A reference that sits near zero against everything would
+    also satisfy the test above, and would mean the plot showed nothing."""
+    other = next(o for o in demo_objects if o.sat_no != 59884)
+    series = physics.compute_series(other, ref_sat, False)
+    assert max(abs(p[1]) for p in series["leolabs"]) > 10.0
 
 
 def test_inverting_the_sign_negates_every_point(demo_objects, ref_sat):
