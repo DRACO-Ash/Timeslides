@@ -182,8 +182,8 @@ def along_track_offsets(r_obs: np.ndarray, r_ref: np.ndarray,
 # --------------------------------------------------------------------------- #
 #  Reference orbit and series assembly
 # --------------------------------------------------------------------------- #
-def reference_satrec(objects, ref_sat_no, ref_epoch):
-    """Build the single common reference orbit used for the whole waterfall.
+def reference_elset(objects, ref_sat_no, ref_epoch):
+    """Choose the element set the whole waterfall is measured from.
 
     Default: the LATEST element set of the reference object, or the one nearest
     ref_epoch when an epoch is asked for.
@@ -196,6 +196,10 @@ def reference_satrec(objects, ref_sat_no, ref_epoch):
     the more of the drift belongs to the reference rather than to the object
     being measured. Every series then carries that error in common, which
     looks like real relative motion and is not.
+
+    Returns the element set rather than its satrec because the report carries
+    the datum itself, so that a hand-entered state can be measured against
+    exactly what the plot was. See timeslides/manual.py.
     """
     ref_obj = next((o for o in objects if o.sat_no == ref_sat_no), None)
     if ref_obj is None:
@@ -208,7 +212,7 @@ def reference_satrec(objects, ref_sat_no, ref_epoch):
         ref = ref_obj.elsets[-1]   # sorted ascending above, so this is latest
     else:
         ref = min(ref_obj.elsets, key=lambda e: abs((e.epoch - ref_epoch).total_seconds()))
-    return ref.satrec()
+    return ref
 
 
 def _state_offsets(svs: list, ref_sat: Satrec, sign: float) -> list:

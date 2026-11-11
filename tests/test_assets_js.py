@@ -489,3 +489,21 @@ def test_an_unreadable_stored_value_is_replaced_not_treated_as_a_denial(picker):
     assert any("could not be read" in w for w in warnings), warnings
     assert not any("will not let" in w for w in warnings), \
         "a bad value is not a refusal to store"
+
+
+# --------------------------------------------------------------------------- #
+#  report.js: manual states
+# --------------------------------------------------------------------------- #
+def test_every_group_starts_with_no_manual_states(report_js):
+    """Held in memory only, so a fresh page has none, whatever was plotted in
+    the last one."""
+    assert _call(report_js, "ST[0].manual") == []
+
+
+def test_restyles_name_only_the_dataset_s_own_traces(report_js):
+    """Plotly cycles a short update array across every trace on the plot. A
+    restyle that did not name its traces would rewrite a manual state's trace
+    with the first object's data, or hide it along with the first object."""
+    got = _call(report_js, "ownTraces({traces: [{}, {}, {}]})")
+    assert got == [0, 1, 2]
+    assert _call(report_js, "ownTraces({traces: []})") == []

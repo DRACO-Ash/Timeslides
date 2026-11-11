@@ -1267,3 +1267,141 @@ def test_a_second_render_supersedes_the_first_rather_than_racing_it(page,
     # its own timer alive alongside the live one.
     assert page.evaluate("() => typeof S.poll") in ("number", "object", "undefined")
     _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  Manual states
+# --------------------------------------------------------------------------- #
+_MANUAL_TRACES = """gd => gd.data
+    .filter(t => String(t.uid || "").startsWith("manual-"))
+    .map(t => ({uid: t.uid, x: t.x[0], y: t.y[0], text: t.text[0],
+                visible: t.visible === undefined ? true : t.visible}))"""
+
+
+def _reference_state(frame, shift_km=0.0):
+    """The reference object's own TEME state at an epoch inside the window,
+    propagated from the element set the report itself carries.
+
+    A state equal to the reference must land on zero, which needs no copy of
+    the demo's data to know. Moving it along the reference's direction of
+    travel by d km must move it by d / speed seconds.
+    """
+    import datetime as dt
+
+    import numpy as np
+    from sgp4.api import Satrec, jday
+
+    body = frame.locator("body")
+    tle = body.evaluate(
+        "() => GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref].tle")
+    epoch = body.evaluate("() => GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref].y"
+                          ".find(ys => ys.length > 2)[1]")
+    when = dt.datetime.fromisoformat(epoch)
+    sat = Satrec.twoline2rv(*tle)
+    err, r, v = sat.sgp4(*jday(when.year, when.month, when.day, when.hour,
+                               when.minute, when.second + when.microsecond * 1e-6))
+    assert err == 0
+    r, v = np.array(r), np.array(v)
+    r = r + shift_km * v / np.linalg.norm(v)
+    return epoch, r, v, float(np.linalg.norm(v))
+
+
+def _enter_manual(frame, epoch, r, v, label):
+    panel = frame.locator(".panel.active")
+    details = panel.locator(".manual details")
+    if details.get_attribute("open") is None:
+        panel.locator(".manual summary").click()
+    panel.locator('select[name="frame"]').select_option("TEME")
+    panel.locator('input[name="epoch"]').fill(epoch + "Z")
+    for name, value in zip(("x", "y", "z", "vx", "vy", "vz"), [*r, *v], strict=True):
+        panel.locator(f'input[name="{name}"]').fill(repr(float(value)))
+    panel.locator('input[name="label"]').fill(label)
+    panel.locator(".mango").click()
+
+
+def test_a_manual_state_lands_where_it_should_and_is_marked_temporary(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    plot = frame.locator(".panel.active .js-plotly-plot")
+    plot.wait_for(timeout=60_000)
+    panel = frame.locator(".panel.active")
+    banner = panel.locator(".manbanner")
+    assert not banner.is_visible(), "the banner shows only while a manual state is on the plot"
+
+    # The reference's own state lands on the zero line.
+    epoch, r, v, _ = _reference_state(frame)
+    _enter_manual(frame, epoch, r, v, "on the datum")
+    panel.locator(".manlist li").first.wait_for()
+    traces = plot.evaluate(_MANUAL_TRACES)
+    assert len(traces) == 1
+    assert abs(traces[0]["x"]) < 1e-3
+    assert traces[0]["text"] == "MANUAL · on the datum"
+    assert banner.is_visible()
+    # Geometry, not visibility. A banner that inherits the plot wrapper's
+    # sizing is visible and covers the whole chart; that happened once.
+    banner_box, plot_box = banner.bounding_box(), plot.bounding_box()
+    assert banner_box["height"] < 40
+    assert banner_box["width"] < plot_box["width"] / 2
+    row = panel.locator(".manlist li").first
+    assert "TEMPORARY" in row.inner_text()
+    assert row.get_attribute("data-uid") == traces[0]["uid"]
+
+    # Moved 76 km along-track, it moves by 76 / speed seconds.
+    epoch, r, v, speed = _reference_state(frame, shift_km=76.0)
+    _enter_manual(frame, epoch, r, v, "ahead")
+    panel.locator(".manlist li").nth(1).wait_for()
+    xs = sorted(t["x"] for t in plot.evaluate(_MANUAL_TRACES))
+    assert xs[0] == pytest.approx(0.0, abs=1e-3)
+    assert xs[1] == pytest.approx(76.0 / speed, rel=1e-3)
+
+    # Isolating the first object must not hide or rewrite a manual state.
+    panel.locator(".cards .card").first.click()
+    after = plot.evaluate(_MANUAL_TRACES)
+    assert all(t["visible"] is True for t in after)
+    assert sorted(t["x"] for t in after) == pytest.approx(xs, abs=1e-9)
+
+    # A change of reference measures both again, against the new datum, and
+    # neither is duplicated or left behind.
+    select = panel.locator(".refsel")
+    current = select.input_value()
+    other = next(o for o in select.locator("option").evaluate_all("os => os.map(o => o.value)")
+                 if o != current)
+    select.select_option(other)
+    frame.locator(".panel.active .manlist li").nth(1).wait_for()
+    page.wait_for_function(
+        """() => {
+          const gd = document.querySelector('#repframe').contentDocument
+            .querySelector('.panel.active .js-plotly-plot');
+          const m = gd.data.filter(t => String(t.uid || '').startsWith('manual-'));
+          return m.length === 2 && m.every(t => Math.abs(t.x[0]) > 1e-3);
+        }""", timeout=30_000)
+    assert panel.locator(".manlist li").count() == 2
+
+    # Removing them takes the trace, the row and the banner with them.
+    for _ in range(2):
+        panel.locator(".manlist .manx").first.click()
+    assert plot.evaluate(_MANUAL_TRACES) == []
+    assert panel.locator(".manlist li").count() == 0
+    assert not banner.is_visible()
+    _assert_clean(page)
+
+
+def test_a_refused_manual_state_says_why_and_plots_nothing(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    plot = frame.locator(".panel.active .js-plotly-plot")
+    plot.wait_for(timeout=60_000)
+    epoch, r, v, _ = _reference_state(frame)
+    _enter_manual(frame, epoch, r, v * 1000.0, "metres per second")
+    msg = frame.locator(".panel.active .manmsg")
+    msg.wait_for()
+    assert "looks like m/s" in msg.inner_text()
+    assert plot.evaluate(_MANUAL_TRACES) == []
+    assert not frame.locator(".panel.active .manbanner").is_visible()
+    _assert_clean(page, allow_failed_requests=True)

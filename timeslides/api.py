@@ -24,6 +24,7 @@ from .config import Settings, load_settings
 from .errors import TimeslidesError, ValidationError
 from .groups import GroupStore
 from .jobs import DONE, JobRunner
+from .manual import plot_manual
 from .models import (DATA_MODES, ELSET_KEY, ELSET_LABEL, SRC_SHAPE, SRC_SYMBOL,
                      STATE_SOURCES, STATE_SOURCE_KEYS)
 from .pipeline import (MAX_GROUPS_PER_RUN, MAX_WINDOW_DAYS, RunSpec, build_report,
@@ -55,6 +56,26 @@ class RunBody(BaseModel):
     modes: list = Field(default_factory=lambda: ["REAL"], max_length=len(DATA_MODES))
     sources: list = Field(default_factory=lambda: list(STATE_SOURCE_KEYS),
                           max_length=len(STATE_SOURCE_KEYS))
+    invert: bool = False
+
+
+class ManualBody(BaseModel):
+    """A hand-entered state vector and the reference it is measured against.
+
+    Every field is accepted as text or a number and parsed in manual.py, so a
+    bad value is refused with a sentence naming it rather than a schema error.
+    The bounds here only stop an oversized body reaching the parser.
+    """
+    epoch: str = Field(default="", max_length=64)
+    frame: str = Field(default="J2000", max_length=16)
+    x: str | float = ""
+    y: str | float = ""
+    z: str | float = ""
+    vx: str | float = ""
+    vy: str | float = ""
+    vz: str | float = ""
+    label: str = Field(default="", max_length=200)
+    tle: list = Field(default_factory=list, max_length=2)
     invert: bool = False
 
 
@@ -107,6 +128,7 @@ def create_app(settings: Settings = None, store=None, runner=None,
     _register_catalogue(app, settings, _client)
     _register_sources(app, settings, store, _client)
     _register_runs(app, settings, store, runner)
+    _register_manual(app)
     return app
 
 
@@ -389,6 +411,25 @@ def _register_runs(app: FastAPI, settings: Settings, store, runner) -> None:
         if on_volume:
             return FileResponse(job.path, media_type="text/html", headers=headers)
         return HTMLResponse(job.html, headers=headers)
+
+
+# --------------------------------------------------------------------------- #
+#  Manual states: placed on a report, never stored
+# --------------------------------------------------------------------------- #
+def _register_manual(app: FastAPI) -> None:
+    @app.post("/api/manual-state")
+    def manual_state(body: ManualBody):
+        """Place one hand-entered state against a report's reference.
+
+        Stateless: nothing is written, nothing is fetched from the UDL, and
+        the report on the volume is untouched. A plain def rather than async,
+        because the J2000 conversion is CPU work and belongs in the thread
+        pool rather than on the event loop. The audit line records that it
+        happened, not what was entered.
+        """
+        out = plot_manual(body.model_dump())
+        event("manual_state.plotted", frame=out["frame"], labelled=bool(out["label"]))
+        return out
 
 
 def _matches_etag(header: str | None, etag: str) -> bool:

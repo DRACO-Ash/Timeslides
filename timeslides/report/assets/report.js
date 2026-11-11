@@ -18,7 +18,7 @@ const SRCLBL = REPORT_DATA.srclbl;
 const ST = {};
 GROUPS.forEach(g => {
   ST[g.id] = { sources:new Set(g.present), hidden:new Set(),
-                mode:g.defaultMode, ref:String(g.defaultRef) };
+                mode:g.defaultMode, ref:String(g.defaultRef), manual:[] };
   g.cards = []; g.vkms = 1;
 });
 
@@ -34,6 +34,10 @@ function esc(v){
 function fmt(n, dp=1){ const s = n>=0 ? "+" : ""; return s + n.toFixed(dp); }
 function km(sec, v){ return Math.abs(sec)*v; }
 function panelEl(id){ return document.querySelector('.panel[data-panel="'+id+'"]'); }
+/* The dataset's own traces, by index. Plotly cycles a short update array
+   across every trace on the plot, so without this a restyle would also rewrite
+   a manual state's trace with the first object's data or visibility. */
+function ownTraces(g){ return g.traces.map((t, i) => i); }
 
 function refOptions(g){
   const st = ST[g.id];
@@ -52,7 +56,7 @@ function applyData(g){
   const rd = md.refData[st.ref];
   g.cards = rd.cards; g.vkms = rd.vkms;
   if(window.Plotly)
-    Plotly.restyle(g.divId, {x: rd.x, y: rd.y, "marker.color": rd.colours});
+    Plotly.restyle(g.divId, {x: rd.x, y: rd.y, "marker.color": rd.colours}, ownTraces(g));
   const refc = rd.cards.find(c => c.is_ref);
   const rm = document.getElementById("refmeta-"+g.id);
   if(refc && rm) rm.textContent = refc.name + " · " + refc.norad;
@@ -62,7 +66,7 @@ function applyData(g){
   if(sel && sel.value !== st.ref) sel.value = st.ref;
   panelEl(g.id).querySelectorAll(".modeseg button").forEach(b =>
     b.classList.toggle("active", b.dataset.mode===st.mode));
-  buildCards(g); buildRelative(g); apply(g);
+  buildCards(g); buildRelative(g); apply(g); replotManual(g);
 }
 
 function setRef(g, refNo){ ST[g.id].ref = String(refNo); applyData(g); }
@@ -191,7 +195,7 @@ function toggleObj(g, norad){
 function apply(g){
   const st = ST[g.id];
   const vis = g.traces.map(t => st.sources.has(t.source) && !st.hidden.has(t.obj));
-  if(window.Plotly) Plotly.restyle(g.divId, {visible: vis});
+  if(window.Plotly) Plotly.restyle(g.divId, {visible: vis}, ownTraces(g));
   const panel = panelEl(g.id);
   panel.querySelectorAll(".srcseg .srcchip").forEach(b =>
     b.classList.toggle("active", st.sources.has(b.dataset.src)));
@@ -201,6 +205,44 @@ function apply(g){
     const eye = el.querySelector(".eye");
     if(eye) eye.textContent = off ? "HIDDEN" : "SHOWN";
   });
+}
+
+/* Manual states. A hand-entered state is not UDL data, so it never joins the
+ * datasets above: the service measures it against this panel's own reference
+ * element set and returns a finished trace and rail row, which are added
+ * alongside. Held in memory only. A reload or a new render drops it, and a
+ * change of reference or mode measures it again against the new datum. */
+function manualRequest(g, body){
+  const st = ST[g.id];
+  const tle = g.modeData[st.mode].refData[st.ref].tle;
+  return fetch("/api/manual-state", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({...body, tle, invert: g.invert})
+  }).then(res => res.json().then(data => res.ok ? data
+    : Promise.reject(new Error(typeof data.detail === "string" ? data.detail : "refused"))));
+}
+
+function plotManual(g, body){
+  const msg = document.getElementById("manmsg-"+g.id);
+  return manualRequest(g, body).then(m => {
+    ST[g.id].manual.push({uid: m.trace.uid, body});
+    if(window.Plotly) Plotly.addTraces(g.divId, m.trace);
+    document.getElementById("manlist-"+g.id).insertAdjacentHTML("beforeend", m.row);
+    msg.textContent = "";
+  }, err => { msg.textContent = "Not plotted: " + err.message; });
+}
+
+function removeManual(g, uid){
+  ST[g.id].manual = ST[g.id].manual.filter(m => m.uid !== uid);
+  const at = (document.getElementById(g.divId).data || []).findIndex(t => t.uid === uid);
+  if(at >= 0) Plotly.deleteTraces(g.divId, at);
+  document.querySelector('#manlist-'+g.id+' [data-uid="'+uid+'"]')?.remove();
+}
+
+function replotManual(g){
+  const held = ST[g.id].manual.slice();
+  held.forEach(m => removeManual(g, m.uid));
+  held.forEach(m => plotManual(g, m.body));
 }
 
 function showTab(id){
@@ -224,6 +266,14 @@ function init(){
       b.addEventListener("click", () => setMode(g, b.dataset.mode)));
     const sel = document.getElementById("refsel-"+g.id);
     if(sel) sel.addEventListener("change", () => setRef(g, sel.value));
+    const form = document.getElementById("manform-"+g.id);
+    if(form) form.querySelector(".mango").addEventListener("click", () =>
+      plotManual(g, Object.fromEntries(new FormData(form))));
+    const list = document.getElementById("manlist-"+g.id);
+    if(list) list.addEventListener("click", e => {
+      const row = e.target.closest(".manx") ? e.target.closest(".manrow") : null;
+      if(row) removeManual(g, row.dataset.uid);
+    });
     applyData(g);
   });
   document.querySelectorAll(".tab").forEach(t =>

@@ -41,7 +41,7 @@ import numpy as np
 from ..errors import ComputeError
 from ..models import (ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL,
                       UNATTRIBUTED)
-from ..physics import compute_series, propagate, reference_satrec
+from ..physics import compute_series, propagate, reference_elset
 from ..quality import summarise
 from ..storage import VolumeWriter
 
@@ -170,7 +170,8 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
     """One (mode, reference) dataset with a FIXED layout: for each sat, one trace
     per source key in `present` (state providers, then the element-set series).
     Missing data yields empty arrays so trace indices stay stable for restyle."""
-    ref_sat = reference_satrec(list(objects_by_sat.values()), ref_no, ref_epoch)
+    ref_elset = reference_elset(list(objects_by_sat.values()), ref_no, ref_epoch)
+    ref_sat = ref_elset.satrec()
     colour = _sat_colours(sat_order, ref_no)
     xs, ys, srcs, colours, cards = [], [], [], [], []
     for s in sat_order:
@@ -191,7 +192,10 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
         "srcs": srcs,
         "colours": colours,
         "cards": cards,
-        "vkms": round(float(np.linalg.norm(v0)), 3)}
+        "vkms": round(float(np.linalg.norm(v0)), 3),
+        # The datum itself, so a hand-entered state is measured against
+        # exactly what this dataset was. See timeslides/manual.py.
+        "tle": [ref_elset.line1, ref_elset.line2]}
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +381,7 @@ def build_panel(panel_id, name, sat_order, names, objects_by_mode, mode_order,
         "modeOrder": [m for m in mode_order if m in mode_data],
         "defaultMode": first_mode,
         "defaultRef": md0["defaultRef"],
+        "invert": invert,
         "v_kms": seed["vkms"],
         "window_start": window[0].strftime("%d %b %Y %H:%MZ"),
         "window_end": window[1].strftime("%d %b %Y %H:%MZ"),
@@ -481,6 +486,62 @@ def _panel_hint(p) -> str:
         "double-click to reset.</p>")
 
 
+def _manual_inputs(pid) -> str:
+    """The six state-vector components, in kilometres and km/s."""
+    fields = [("x", "x", "km"), ("y", "y", "km"), ("z", "z", "km"),
+              ("vx", "vx", "km/s"), ("vy", "vy", "km/s"), ("vz", "vz", "km/s")]
+    return "".join(
+        f'<label>{label} <span class="u">{unit}</span>'
+        f'<input name="{name}" type="number" step="any" required '
+        f'id="man-{name}-{pid}"></label>'
+        for name, label, unit in fields)
+
+
+def _manual_section(p) -> str:
+    """Place a hand-entered state vector on the plot, temporarily.
+
+    Rendered in the rail with its own dashed border so it never reads as one of
+    the UDL controls above it. The state is computed by the service against
+    this panel's reference element set and held in the page only, which is
+    what the note says in words: a downloaded copy cannot compute one, and
+    nothing entered here is saved or written into the report.
+
+    The button is a plain button, not a submit. The report runs in a frame
+    sandboxed without allow-forms, where a browser blocks form submission
+    before the submit event fires, so a submit handler would never run. The
+    form element stays for grouping the inputs; widening the sandbox to make
+    submission work is not worth what it would allow.
+    """
+    pid = p["id"]
+    return f"""
+      <div class="manual">
+        <h2>Manual state &middot; temporary, not from UDL</h2>
+        <ul class="manlist" id="manlist-{pid}"></ul>
+        <details>
+          <summary>Add a state vector</summary>
+          <form class="manform" id="manform-{pid}" autocomplete="off">
+            <label class="wide">Epoch (UTC)
+              <input name="epoch" required placeholder="2026-06-25T12:00:00.000Z"
+                     id="man-epoch-{pid}"></label>
+            <label>Frame
+              <select name="frame" id="man-frame-{pid}">
+                <option value="J2000" selected>J2000</option>
+                <option value="TEME">TEME</option>
+              </select></label>
+            {_manual_inputs(pid)}
+            <label class="wide">Label <span class="u">optional</span>
+              <input name="label" maxlength="40" id="man-label-{pid}"></label>
+            <button type="button" class="mango">Plot temporary state</button>
+          </form>
+          <p class="hint">Measured against this panel's reference element set,
+          the same way as a UDL state vector. Held in this tab only: not saved,
+          not written into the report, gone on reload, and recomputed if you
+          change the reference or data mode. Needs the live service.</p>
+        </details>
+        <p class="manmsg" id="manmsg-{pid}" role="status" aria-live="polite"></p>
+      </div>"""
+
+
 def _panel_section(p, active) -> str:
     cls = "panel active" if active else "panel"
     name = esc(p["name"])
@@ -515,13 +576,17 @@ def _panel_section(p, active) -> str:
         <h2>Objects &mdash; tap to isolate</h2>
         <div class="cards" id="cards-{p['id']}"></div>
       </div>
+      {_manual_section(p)}
       <div>
         <h2>Relative motion &mdash; object to object</h2>
         <div id="rel-{p['id']}"></div>
       </div>
       {_panel_hint(p)}
     </aside>
-    <div class="plotwrap">{p['plot_div']}</div>
+    <div class="plotwrap">
+      <p class="manbanner" aria-hidden="true">MANUAL STATE ON PLOT &middot; NOT FROM UDL &middot; NOT SAVED</p>
+      {p['plot_div']}
+    </div>
   </main>
 </section>"""
 
@@ -543,7 +608,8 @@ def _report_payload(panels) -> str:
         "modeData": p["modeData"],
         "modeOrder": p["modeOrder"],
         "defaultMode": p["defaultMode"],
-        "defaultRef": p["defaultRef"]}
+        "defaultRef": p["defaultRef"],
+        "invert": p["invert"]}
               for p in panels]
     return json_for_html({"groups": groups, "srclbl": SRC_LABEL})
 

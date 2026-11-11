@@ -461,3 +461,40 @@ def test_a_hostile_source_name_cannot_execute_in_the_band():
     band = _quality_band(summarise([finding]))
     assert "<script>" not in band
     assert "&lt;script&gt;" in band
+
+
+# --------------------------------------------------------------------------- #
+#  Manual states: the report carries the datum and offers the control
+# --------------------------------------------------------------------------- #
+def test_every_dataset_carries_the_reference_element_set_it_was_measured_from(html):
+    """A hand-entered state is measured server-side against this, so it has to
+    be the element set the dataset actually used, one per (mode, reference)."""
+    data = _payload(html)
+    for group in data["groups"]:
+        assert group["invert"] is False
+        for md in group["modeData"].values():
+            lines = []
+            for rd in md["refData"].values():
+                line1, line2 = rd["tle"]
+                assert len(line1) == len(line2) == 69
+                assert line1.startswith("1 ") and line2.startswith("2 ")
+                lines.append(line1)
+            if len(md["refData"]) > 1:
+                assert len(set(lines)) == len(lines), "each reference has its own datum"
+
+
+def test_every_panel_offers_a_manual_state_marked_as_temporary(html, panels):
+    for p in panels:
+        assert f'id="manform-{p["id"]}"' in html
+        assert f'id="manlist-{p["id"]}"' in html
+        assert f'id="manmsg-{p["id"]}"' in html
+    assert "Manual state &middot; temporary, not from UDL" in html
+    assert "NOT FROM UDL &middot; NOT SAVED" in html
+    assert "not saved" in html and "gone on reload" in html
+
+
+def test_the_manual_form_asks_for_every_component_with_its_unit(html):
+    for name in ("epoch", "frame", "x", "y", "z", "vx", "vy", "vz", "label"):
+        assert f'name="{name}"' in html
+    assert html.count('<span class="u">km/s</span>') >= 3
+    assert '<option value="J2000" selected>J2000</option>' in html

@@ -176,3 +176,51 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 .dq-alert{border-color:rgba(198,124,0,0.55); color:var(--muted)}
 .dq-alert > b:first-child{color:var(--copper)}
 .dq-note{color:var(--dim)}
+
+/* Manual states. A hand-entered state is not UDL data and must never read as
+   though it were, so everything about it carries the same signal: a dashed
+   copper edge, the word TEMPORARY, and the white star it is plotted with. */
+.manual{border:1px dashed rgba(198,124,0,0.6); border-radius:12px; padding:10px 12px;
+  background:rgba(198,124,0,0.05)}
+.manual h2{color:var(--copper)}
+.manual summary{font-family:var(--mono); font-size:11px; color:var(--muted); cursor:pointer}
+.manual summary:focus-visible{outline:2px solid var(--blue-l); outline-offset:2px}
+.manlist{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px}
+.manlist:not(:empty){margin-bottom:8px}
+.manrow{border:1px dashed rgba(198,124,0,0.55); border-radius:9px; padding:7px 9px;
+  background:var(--panel)}
+.manhead{display:flex; align-items:center; gap:7px}
+.mantag{font-family:var(--mono); font-size:8.5px; letter-spacing:.14em; font-weight:700;
+  color:#0B1020; background:var(--copper); padding:2px 6px; border-radius:5px}
+.manname{font-size:12px; color:var(--text); flex:1; min-width:0; overflow-wrap:anywhere}
+.manx{appearance:none; border:0; background:transparent; color:var(--dim); cursor:pointer;
+  font-size:15px; line-height:1; padding:0 2px}
+.manx:hover{color:var(--copper)}
+.manx:focus-visible{outline:2px solid var(--blue-l); outline-offset:2px}
+.manval{font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:4px}
+.manform{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0}
+.manform label{display:flex; flex-direction:column; gap:3px; font-family:var(--mono);
+  font-size:10px; color:var(--dim)}
+.manform label .u{color:var(--dim); opacity:.7}
+.manform .wide{grid-column:1 / -1}
+.manform input,.manform select{width:100%; background:var(--panel-solid); color:var(--text);
+  border:1px solid var(--line); border-radius:7px; padding:6px 7px; font-family:var(--mono);
+  font-size:11px}
+.manform input:focus-visible,.manform select:focus-visible{outline:2px solid var(--blue-l);
+  outline-offset:1px}
+.mango{grid-column:1 / -1; appearance:none; cursor:pointer; font-family:var(--mono); font-size:11px;
+  font-weight:700; letter-spacing:.06em; color:#0B1020; background:var(--copper); border:0;
+  border-radius:8px; padding:8px}
+.mango:focus-visible{outline:2px solid var(--blue-l); outline-offset:2px}
+.manmsg{font-family:var(--mono); font-size:10.5px; color:var(--copper); margin:6px 0 0}
+.manmsg:empty{display:none}
+/* Shown over the plot only while a manual state is on it. Driven by the rail
+   list's contents through :has, so there is no second piece of state to keep
+   in step with the first. A <p>, not a <div>: .plotwrap>div sizes every div
+   child to the whole plot, which is what the figure needs and what a banner
+   must not inherit. It did, once, and covered the chart. */
+.manbanner{display:none; position:absolute; top:8px; left:72px; z-index:5; pointer-events:none;
+  margin:0;
+  font-family:var(--mono); font-size:10px; letter-spacing:.14em; font-weight:700; color:#0B1020;
+  background:var(--copper); padding:4px 9px; border-radius:6px}
+.panel:has(.manlist li) .manbanner{display:block}

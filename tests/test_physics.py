@@ -70,7 +70,7 @@ def demo_objects():
 
 @pytest.fixture(scope="module")
 def ref_sat(demo_objects):
-    return physics.reference_satrec(demo_objects, 59884, None)
+    return physics.reference_elset(demo_objects, 59884, None).satrec()
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +188,7 @@ def test_reference_orbit_defaults_to_the_latest_tle(demo_objects):
     """
     obj = next(o for o in demo_objects if o.sat_no == 59884)
     latest = max(e.epoch for e in obj.elsets)
-    sat = physics.reference_satrec(demo_objects, 59884, None)
+    sat = physics.reference_elset(demo_objects, 59884, None).satrec()
     expected = next(e for e in obj.elsets if e.epoch == latest).satrec()
     assert sat.jdsatepoch == expected.jdsatepoch
 
@@ -204,14 +204,14 @@ def test_the_latest_reference_tle_is_not_the_earliest(demo_objects):
 def test_reference_orbit_honours_a_requested_epoch(demo_objects):
     obj = next(o for o in demo_objects if o.sat_no == 59884)
     target = sorted(e.epoch for e in obj.elsets)[3]
-    sat = physics.reference_satrec(demo_objects, 59884, target)
+    sat = physics.reference_elset(demo_objects, 59884, target).satrec()
     expected = next(e for e in obj.elsets if e.epoch == target).satrec()
     assert sat.jdsatepoch == expected.jdsatepoch
 
 
 def test_unknown_reference_object_raises_compute_error(demo_objects):
     with pytest.raises(ComputeError, match="not among the loaded objects"):
-        physics.reference_satrec(demo_objects, 12345, None)
+        physics.reference_elset(demo_objects, 12345, None)
 
 
 def test_reference_object_without_tles_raises_compute_error(demo_objects):
@@ -219,7 +219,7 @@ def test_reference_object_without_tles_raises_compute_error(demo_objects):
     stripped = [o for o in demo_objects if o.sat_no != 59884]
     bare = type(obj)(sat_no=59884, name=obj.name, colour=obj.colour)
     with pytest.raises(ComputeError, match="no TLEs to anchor"):
-        physics.reference_satrec([*stripped, bare], 59884, None)
+        physics.reference_elset([*stripped, bare], 59884, None)
 
 
 def test_sgp4_failure_surfaces_as_compute_error_not_systemexit():
