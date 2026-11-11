@@ -167,6 +167,29 @@ def find_except_that_only_passes(source: str) -> list:
             and isinstance(node.body[0], ast.Pass)]
 
 
+def _float_literal(node) -> bool:
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+        node = node.operand
+    return isinstance(node, ast.Constant) and isinstance(node.value, float)
+
+
+def find_float_equality(source: str) -> list:
+    """Lines where == or != has a float literal on either side.
+
+    Gate finding python:S1244, "Do not perform equality checks with floating
+    point values", raised on manual.py in 1.8.0 for `speed == 0.0`. Ruff has no
+    rule for it, so it lives here. Parsed rather than matched, so a comment or
+    a string mentioning one is not a hit.
+    """
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Compare)
+                and any(isinstance(op, ast.Eq | ast.NotEq) for op in node.ops)
+                and any(_float_literal(o) for o in (node.left, *node.comparators))):
+            out.append(node.lineno)
+    return out
+
+
 def find_nested_quantifiers(source: str) -> list:
     out = []
     for m in re.finditer(r"""re\.compile\(\s*r?['"](.+?)['"]""", source):
@@ -415,6 +438,14 @@ def test_no_except_that_only_passes():
                          "contextlib.suppress, which says so:\n" + "\n".join(found))
 
 
+def test_no_equality_check_against_a_float_literal():
+    """Compare a float against a bound, never for equality."""
+    found = [f"{p.relative_to(ROOT)}:{line}" for p in _py_files()
+             for line in find_float_equality(p.read_text(encoding="utf-8"))]
+    assert found == [], ("a float compared for equality; compare against a "
+                         "bound instead:\n" + "\n".join(found))
+
+
 def test_the_listen_address_is_configuration_rather_than_a_literal():
     """Gate finding: "Avoid binding the application to all network interfaces."
 
@@ -557,6 +588,17 @@ def test_no_check_in_this_repository_searches_a_file_including_its_comments():
     assert "_strip_js_comments" in source
     assert "ast.parse" in source
     assert prose_is_the_subject <= set(raw_readers)
+
+
+def test_the_float_equality_detector_finds_the_finding_it_was_written_for():
+    source = "if speed == 0.0:\n    pass\nok = 0.5 != x\nneg = y == -1.5\n"
+    assert find_float_equality(source) == [1, 3, 4]
+
+
+def test_the_float_equality_detector_leaves_bounds_integers_and_prose_alone():
+    source = ('if speed < 1e-3:\n    pass\nn = count == 0\nm = x is None\n'
+              '# speed == 0.0 in a comment\nnote = "speed == 0.0"\n')
+    assert find_float_equality(source) == []
 
 
 def test_every_detector_in_this_file_is_exercised_by_a_test():

@@ -308,8 +308,8 @@ for gone in ("_sqlite3", "_uuid", "readline", "_curses"):
 from timeslides.demo import build_demo
 import datetime as dt
 objs = build_demo(dt.datetime(2026, 6, 24), dt.datetime(2026, 7, 1))
-from timeslides.physics import compute_series, reference_satrec
-ref = reference_satrec(objs, objs[0].sat_no, None)
+from timeslides.physics import compute_series, reference_elset
+ref = reference_elset(objs, objs[0].sat_no, None).satrec()
 series = compute_series(objs[0], ref, False)
 assert sum(len(v) for v in series.values()) > 0, "the physics produced nothing"
 print("rootfs verified: python %s, %d modules, %d offsets computed"

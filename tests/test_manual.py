@@ -216,7 +216,8 @@ def test_numbers_are_accepted_as_numbers_as_well_as_text(ref, observed):
     ((6_778_137.0, 0.0, 0.0), (0.0, 7.6, 0.0), "looks like metres"),
     ((6000.0, 0.0, 0.0), (0.0, 7.6, 0.0), "inside the Earth"),
     ((6778.0, 0.0, 0.0), (0.0, 7600.0, 0.0), "looks like m/s"),
-    ((6778.0, 0.0, 0.0), (0.0, 0.0, 0.0), "velocity is zero"),
+    ((6778.0, 0.0, 0.0), (0.0, 0.0, 0.0), "effectively zero"),
+    ((6778.0, 0.0, 0.0), (0.0, 0.0, 1e-6), "effectively zero"),
 ])
 def test_an_impossible_state_is_refused_with_the_likely_unit_error(r, v, match):
     with pytest.raises(ValidationError, match=match):

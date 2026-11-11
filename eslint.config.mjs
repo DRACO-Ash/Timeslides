@@ -40,8 +40,40 @@ function sameSource(a, b) {
   return false;
 }
 
+/* Gate finding javascript:S3358, "Extract this nested ternary operation into
+ * an independent statement", raised on report.js in 1.8.0.
+ *
+ * ESLint's own no-nested-ternary did not catch it and could not have: it only
+ * sees a ternary placed directly in another's branch. The one Sonar flagged
+ * sat inside Promise.reject(new Error(...)) within the outer ternary's branch,
+ * which Sonar counts and the stock rule does not. This walks up from every
+ * ternary and reports any enclosing ternary, stopping at a function boundary,
+ * because a ternary inside a callback is a separate expression.
+ */
+const FUNCTION_NODES = new Set(
+  ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+
 const local = {
   rules: {
+    "no-nested-conditional": {
+      meta: { type: "suggestion", docs: { description: "no ternary inside a ternary" } },
+      create(context) {
+        return {
+          ConditionalExpression(node) {
+            for (const up of context.sourceCode.getAncestors(node).reverse()) {
+              if (FUNCTION_NODES.has(up.type)) return;
+              if (up.type === "ConditionalExpression") {
+                context.report({
+                  node,
+                  message: "A ternary inside a ternary: extract it into its own statement.",
+                });
+                return;
+              }
+            }
+          },
+        };
+      },
+    },
     "prefer-optional-chain": {
       meta: { type: "suggestion", docs: { description: "x && x.y is x?.y" } },
       create(context) {
@@ -125,6 +157,7 @@ export default [
       /* Gate findings, twice: "Prefer using an optional chain expression."
          See the rule definition above for why this is not a selector. */
       "local/prefer-optional-chain": "error",
+      "local/no-nested-conditional": "error",
 
       /* Gate finding: "The empty object is useless." An empty literal spread
          or merged into another contributes nothing and reads as an oversight. */
@@ -133,6 +166,11 @@ export default [
       "no-useless-return": "error",
       "no-lonely-if": "error",
       "no-else-return": "error",
+
+      /* Gate finding: "Extract this nested ternary operation into an
+         independent statement" (javascript:S3358), raised on report.js in
+         1.8.0. A ternary inside a ternary is two decisions read as one. */
+      "no-nested-ternary": "error",
 
       /* Correctness rules that cost nothing and catch real mistakes. */
       "eqeqeq": ["error", "smart"],

@@ -212,14 +212,20 @@ function apply(g){
  * element set and returns a finished trace and rail row, which are added
  * alongside. Held in memory only. A reload or a new render drops it, and a
  * change of reference or mode measures it again against the new datum. */
+/* The service refuses with a sentence in detail; anything else that comes
+   back is reported as a plain refusal rather than as "[object Object]". */
+function refusal(data){
+  const said = typeof data.detail === "string" ? data.detail : "refused";
+  return new Error(said);
+}
+
 function manualRequest(g, body){
   const st = ST[g.id];
   const tle = g.modeData[st.mode].refData[st.ref].tle;
   return fetch("/api/manual-state", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({...body, tle, invert: g.invert})
-  }).then(res => res.json().then(data => res.ok ? data
-    : Promise.reject(new Error(typeof data.detail === "string" ? data.detail : "refused"))));
+  }).then(res => res.json().then(data => res.ok ? data : Promise.reject(refusal(data))));
 }
 
 function plotManual(g, body){

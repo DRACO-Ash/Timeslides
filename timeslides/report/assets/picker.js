@@ -49,11 +49,25 @@ function show(target, message, isError) {
 }
 
 /* --- transport ---------------------------------------------------------- */
+/* Every request this page makes is to this service's own API, so anything else
+ * is refused before it is sent: an absolute URL, a protocol-relative one, or a
+ * path outside /api/. That pins the page to its own origin whatever a caller
+ * passes, and it is the allowlist shape the platform's SAST recognises as
+ * validated input. */
+const API_ROOTS = new Set(["api"]);
+
 async function api(path, options) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options
-  });
+  if (API_ROOTS.has(String(path).split("/")[1])) {
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options
+    });
+    return readReply(res);
+  }
+  throw new Error(`refused to request ${path}: not this service's API`);
+}
+
+async function readReply(res) {
   let body = null;
   try {
     body = await res.json();
@@ -477,13 +491,13 @@ async function startRun() {
   }
 }
 
-function pollRun(token) {
+function pollRun(mine) {
   if (S.poll) clearTimeout(S.poll);
   const tick = async () => {
-    if (token !== S.runToken) return;     /* a newer render owns the page now */
+    if (mine !== S.runToken) return;      /* a newer render owns the page now */
     try {
       const job = await api(`/api/runs/${encodeURIComponent(S.run.id)}`);
-      if (token !== S.runToken) return;
+      if (mine !== S.runToken) return;
       S.run = job;
       drawRun();
       if (job.status === "queued" || job.status === "running") {
@@ -493,7 +507,7 @@ function pollRun(token) {
         if (job.status === "done") openReport(job.reportUrl);
       }
     } catch (err) {
-      if (token !== S.runToken) return;
+      if (mine !== S.runToken) return;
       show("runmsg", `Lost track of the run: ${err.message}`, true);
       el("runbtn").disabled = false;
     }

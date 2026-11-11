@@ -62,6 +62,9 @@ MANUAL_RING = "#C67C00"
 MIN_RADIUS_KM = 6378.137          # the Earth's equatorial radius
 MAX_RADIUS_KM = 100_000.0
 MAX_SPEED_KMS = 20.0
+# A floor rather than a test for zero: a float is compared against a bound,
+# never for equality. A metre per second is far below any orbit.
+MIN_SPEED_KMS = 1e-3
 
 LABEL_MAX = 40
 # A short note, so a deliberately plain alphabet. Nothing in it needs escaping
@@ -145,8 +148,10 @@ def check_state(r: np.ndarray, v: np.ndarray) -> None:
         raise ValidationError(
             f"velocity magnitude is {speed:,.1f} km/s, beyond {MAX_SPEED_KMS:.0f} km/s. "
             "Velocities are in km/s; this looks like m/s.")
-    if speed == 0.0:
-        raise ValidationError("velocity is zero; a state needs a velocity in km/s")
+    if speed < MIN_SPEED_KMS:
+        raise ValidationError(
+            f"velocity magnitude is {speed:g} km/s, effectively zero; "
+            "a state needs a velocity in km/s")
 
 
 def tle_checksum(line: str) -> int:

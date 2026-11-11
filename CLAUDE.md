@@ -63,7 +63,15 @@ alone has already cost several more.
 .venv/bin/ruff check .
 npx eslint .
 sh docker/appstore-sim.sh           # both passes: normal, and hostile ingest
+sh docker/sast-probe.sh             # the platform's own SAST rules, locally
+docker build -f Dockerfile .        # from a git ls-files tree; runs the rootfs self-check
 ```
+
+The image build is not optional. 1.8.0 removed a function that the rootfs
+self-check in `docker/build-rootfs.sh` still imported. That check is Python
+inside a shell heredoc, so a search of `.py` files and the whole test suite
+missed it, and the Container Build stage found it. Search for a removed name
+with `git grep` across every file, and build the image before every upload.
 
 `appstore-sim.sh` reproduces the platform's environment rather than remembering
 it: unpacked tree, no `.git`, no git binary, no `sonar-project.properties`, and

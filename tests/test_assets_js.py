@@ -507,3 +507,57 @@ def test_restyles_name_only_the_dataset_s_own_traces(report_js):
     got = _call(report_js, "ownTraces({traces: [{}, {}, {}]})")
     assert got == [0, 1, 2]
     assert _call(report_js, "ownTraces({traces: []})") == []
+
+
+def test_a_refusal_carries_the_service_s_sentence(report_js):
+    got = _call(report_js, 'refusal({detail: "looks like m/s"}).message')
+    assert got == "looks like m/s"
+
+
+def test_a_refusal_without_a_sentence_says_refused_rather_than_object(report_js):
+    """A schema error's detail is a list, which would print as [object Object]."""
+    assert _call(report_js, 'refusal({detail: [{"loc": ["x"]}]}).message') == "refused"
+    assert _call(report_js, "refusal({}).message") == "refused"
+
+
+# --------------------------------------------------------------------------- #
+#  picker.js: requests go to this service's API and nowhere else
+# --------------------------------------------------------------------------- #
+FETCH_STUB = """
+globalThis.__fetched = [];
+globalThis.fetch = function (path) {
+  globalThis.__fetched.push(path);
+  return Promise.resolve({ ok: true, status: 200,
+                           json: function () { return Promise.resolve({ fine: 1 }); } });
+};
+"""
+
+
+def _settle(ctx, expression: str):
+    """Run an async call to completion and return what it resolved or threw."""
+    ctx.eval(f"globalThis.__out = null; ({expression})"
+             ".then(v => { __out = {ok: v}; }, e => { __out = {err: e.message}; });")
+    while ctx.execute_pending_job():
+        pass
+    return _call(ctx, "__out")
+
+
+@pytest.mark.parametrize("path", [
+    "https://elsewhere.example/api/groups",
+    "//elsewhere.example/api/groups",
+    "/healthz",
+    "api/groups",
+])
+def test_a_request_outside_this_service_s_api_is_refused_before_it_is_sent(path):
+    ctx = _context("picker.js", {"shell-data": SHELL_DATA})
+    ctx.eval(FETCH_STUB)
+    got = _settle(ctx, f"api({json.dumps(path)})")
+    assert "refused to request" in got["err"]
+    assert _call(ctx, "__fetched") == []
+
+
+def test_a_request_to_this_service_s_api_is_sent():
+    ctx = _context("picker.js", {"shell-data": SHELL_DATA})
+    ctx.eval(FETCH_STUB)
+    assert _settle(ctx, 'api("/api/groups")') == {"ok": {"fine": 1}}
+    assert _call(ctx, "__fetched") == ["/api/groups"]
