@@ -299,10 +299,18 @@ def test_an_identical_run_joins_rather_than_re_rendering(client, app_bits):
 def test_two_clicks_in_the_same_moment_are_one_render(client, app_bits):
     """The case single-flight exists for: an operator double-clicking, or two
     of them pressing Render at once. Neither request waits for the other, so
-    this posts twice without awaiting in between."""
+    this posts twice without awaiting in between.
+
+    The window is pinned. Given as days it ends at now, truncated to the
+    second, so two posts that straddle a second boundary are genuinely two
+    different reports (the next test pins that) and this test failed whenever
+    they did. Rare, because the posts are milliseconds apart, and seen once in
+    a full run, which is what a clock race looks like.
+    """
     _, _, _, rendered = app_bits
-    first = client.post("/api/runs", json={"days": 7}).json()
-    second = client.post("/api/runs", json={"days": 7}).json()
+    window = {"start": "2026-06-24T00:00:00", "end": "2026-07-01T00:00:00"}
+    first = client.post("/api/runs", json=window).json()
+    second = client.post("/api/runs", json=window).json()
     assert second["joined"] is True
     assert second["id"] == first["id"]
     _await_run(client, first["id"])

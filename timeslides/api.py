@@ -60,12 +60,14 @@ class RunBody(BaseModel):
 
 
 class ManualBody(BaseModel):
-    """A hand-entered state vector and the reference it is measured against.
+    """A hand-entered state vector or element set, and the reference it is
+    measured against.
 
     Every field is accepted as text or a number and parsed in manual.py, so a
     bad value is refused with a sentence naming it rather than a schema error.
     The bounds here only stop an oversized body reaching the parser.
     """
+    kind: str = Field(default="state", max_length=16)
     epoch: str = Field(default="", max_length=64)
     frame: str = Field(default="J2000", max_length=16)
     x: str | float = ""
@@ -74,6 +76,9 @@ class ManualBody(BaseModel):
     vx: str | float = ""
     vy: str | float = ""
     vz: str | float = ""
+    # A pasted set: two lines of 69, or three with a name, plus line endings
+    # and the odd trailing space. 400 is generous for that and no more.
+    elset: str = Field(default="", max_length=400)
     label: str = Field(default="", max_length=200)
     tle: list = Field(default_factory=list, max_length=2)
     invert: bool = False
@@ -419,7 +424,8 @@ def _register_runs(app: FastAPI, settings: Settings, store, runner) -> None:
 def _register_manual(app: FastAPI) -> None:
     @app.post("/api/manual-state")
     def manual_state(body: ManualBody):
-        """Place one hand-entered state against a report's reference.
+        """Place one hand-entered state vector or element set against a
+        report's reference.
 
         Stateless: nothing is written, nothing is fetched from the UDL, and
         the report on the volume is untouched. A plain def rather than async,
@@ -428,7 +434,7 @@ def _register_manual(app: FastAPI) -> None:
         happened, not what was entered.
         """
         out = plot_manual(body.model_dump())
-        event("manual_state.plotted", frame=out["frame"], labelled=bool(out["label"]))
+        event("manual_state.plotted", kind=out["kind"], labelled=bool(out["label"]))
         return out
 
 

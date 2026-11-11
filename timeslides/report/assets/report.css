@@ -203,10 +203,12 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
   font-size:10px; color:var(--dim)}
 .manform label .u{color:var(--dim); opacity:.7}
 .manform .wide{grid-column:1 / -1}
-.manform input,.manform select{width:100%; background:var(--panel-solid); color:var(--text);
+.manform input,.manform select,.manform textarea{width:100%; background:var(--panel-solid);
+  color:var(--text);
   border:1px solid var(--line); border-radius:7px; padding:6px 7px; font-family:var(--mono);
   font-size:11px}
-.manform input:focus-visible,.manform select:focus-visible{outline:2px solid var(--blue-l);
+.manform input:focus-visible,.manform select:focus-visible,
+.manform textarea:focus-visible{outline:2px solid var(--blue-l);
   outline-offset:1px}
 .mango{grid-column:1 / -1; appearance:none; cursor:pointer; font-family:var(--mono); font-size:11px;
   font-weight:700; letter-spacing:.06em; color:#0B1020; background:var(--copper); border:0;
@@ -224,3 +226,19 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
   font-family:var(--mono); font-size:10px; letter-spacing:.14em; font-weight:700; color:#0B1020;
   background:var(--copper); padding:4px 9px; border-radius:6px}
 .panel:has(.manlist li) .manbanner{display:block}
+.manform textarea{resize:vertical; white-space:pre; overflow-x:auto}
+.mankind{font-family:var(--mono); font-size:8.5px; letter-spacing:.14em; font-weight:700;
+  color:var(--copper); border:1px solid rgba(198,124,0,0.55); padding:1px 5px; border-radius:5px}
+/* The kind switch. Fields belonging to the other kind are hidden by :has() on
+   the checked radio, so the choice needs no script. */
+/* Block, not flex: a fieldset's legend is not a flex item, so a flex fieldset
+   put the legend and both choices on one row and wrapped the labels. */
+.manpick{grid-column:1 / -1; display:block; border:0; margin:0; padding:0}
+.manpick legend{font-family:var(--mono); font-size:10px; color:var(--dim); padding:0;
+  margin-bottom:5px}
+.manpick label{display:inline-flex; flex-direction:row; align-items:center; gap:6px;
+  margin-right:16px; font-size:11px; color:var(--text); white-space:nowrap; cursor:pointer}
+.manpick input{width:auto; accent-color:var(--copper); margin:0}
+.manform .el-only{display:none}
+.manform:has(input[name="kind"][value="elset"]:checked) .el-only{display:flex}
+.manform:has(input[name="kind"][value="elset"]:checked) .sv-only{display:none}

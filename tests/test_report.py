@@ -494,7 +494,9 @@ def test_every_panel_offers_a_manual_state_marked_as_temporary(html, panels):
 
 
 def test_the_manual_form_asks_for_every_component_with_its_unit(html):
-    for name in ("epoch", "frame", "x", "y", "z", "vx", "vy", "vz", "label"):
+    for name in ("kind", "epoch", "frame", "x", "y", "z", "vx", "vy", "vz", "elset", "label"):
         assert f'name="{name}"' in html
+    assert 'name="kind" value="state" checked' in html
+    assert '<textarea name="elset"' in html
     assert html.count('<span class="u">km/s</span>') >= 3
     assert '<option value="J2000" selected>J2000</option>' in html

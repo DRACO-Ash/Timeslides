@@ -491,14 +491,15 @@ def _manual_inputs(pid) -> str:
     fields = [("x", "x", "km"), ("y", "y", "km"), ("z", "z", "km"),
               ("vx", "vx", "km/s"), ("vy", "vy", "km/s"), ("vz", "vz", "km/s")]
     return "".join(
-        f'<label>{label} <span class="u">{unit}</span>'
-        f'<input name="{name}" type="number" step="any" required '
+        f'<label class="sv-only">{label} <span class="u">{unit}</span>'
+        f'<input name="{name}" type="number" step="any" '
         f'id="man-{name}-{pid}"></label>'
         for name, label, unit in fields)
 
 
 def _manual_section(p) -> str:
-    """Place a hand-entered state vector on the plot, temporarily.
+    """Place a hand-entered state vector or element set on the plot,
+    temporarily.
 
     Rendered in the rail with its own dashed border so it never reads as one of
     the UDL controls above it. The state is computed by the service against
@@ -511,6 +512,10 @@ def _manual_section(p) -> str:
     before the submit event fires, so a submit handler would never run. The
     form element stays for grouping the inputs; widening the sandbox to make
     submission work is not worth what it would allow.
+
+    Which fields show is decided by the kind switch through :has() in the
+    stylesheet, so choosing a kind adds no client code. Hidden fields are
+    still sent; the service reads only the ones the kind needs.
     """
     pid = p["id"]
     return f"""
@@ -518,12 +523,23 @@ def _manual_section(p) -> str:
         <h2>Manual state &middot; temporary, not from UDL</h2>
         <ul class="manlist" id="manlist-{pid}"></ul>
         <details>
-          <summary>Add a state vector</summary>
+          <summary>Add a state vector or element set</summary>
           <form class="manform" id="manform-{pid}" autocomplete="off">
-            <label class="wide">Epoch (UTC)
-              <input name="epoch" required placeholder="2026-06-25T12:00:00.000Z"
+            <fieldset class="manpick wide">
+              <legend>Kind</legend>
+              <label><input type="radio" name="kind" value="state" checked
+                            id="man-kind-state-{pid}"> State vector</label>
+              <label><input type="radio" name="kind" value="elset"
+                            id="man-kind-elset-{pid}"> Element set</label>
+            </fieldset>
+            <label class="wide sv-only">Epoch (UTC)
+              <input name="epoch" placeholder="2026-06-25T12:00:00.000Z"
                      id="man-epoch-{pid}"></label>
-            <label>Frame
+            <label class="wide el-only">Two-line element set
+              <span class="u">a name line above is allowed</span>
+              <textarea name="elset" rows="3" spellcheck="false" id="man-elset-{pid}"
+                        placeholder="1 59884U ...&#10;2 59884 ..."></textarea></label>
+            <label class="sv-only">Frame
               <select name="frame" id="man-frame-{pid}">
                 <option value="J2000" selected>J2000</option>
                 <option value="TEME">TEME</option>
@@ -531,12 +547,14 @@ def _manual_section(p) -> str:
             {_manual_inputs(pid)}
             <label class="wide">Label <span class="u">optional</span>
               <input name="label" maxlength="40" id="man-label-{pid}"></label>
-            <button type="button" class="mango">Plot temporary state</button>
+            <button type="button" class="mango">Plot temporary point</button>
           </form>
           <p class="hint">Measured against this panel's reference element set,
-          the same way as a UDL state vector. Held in this tab only: not saved,
-          not written into the report, gone on reload, and recomputed if you
-          change the reference or data mode. Needs the live service.</p>
+          the same way as UDL data: a state vector at its epoch, an element set
+          propagated to its own epoch, as the element-set series are. Held in
+          this tab only: not saved, not written into the report, gone on reload,
+          and recomputed if you change the reference or data mode. Needs the
+          live service.</p>
         </details>
         <p class="manmsg" id="manmsg-{pid}" role="status" aria-live="polite"></p>
       </div>"""

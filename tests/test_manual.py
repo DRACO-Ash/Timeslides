@@ -142,7 +142,8 @@ def test_the_rail_row_says_temporary_and_can_be_removed(ref, observed):
     assert f'data-uid="{uid}"' in out["row"]
     assert "TEMPORARY" in out["row"]
     assert 'class="manx"' in out["row"]
-    assert out["frame"] in out["row"]
+    assert out["detail"] in out["row"]
+    assert ">STATE<" in out["row"]
 
 
 def test_the_manual_colour_is_no_object_s_colour():
@@ -306,6 +307,7 @@ def test_the_endpoint_places_a_state_and_records_only_that_it_did(
     plotted = [line for line in lines if line["msg"] == "manual_state.plotted"]
     assert len(plotted) == 1
     assert plotted[0]["labelled"] is True
+    assert plotted[0]["kind"] == "state"
     record = json.dumps(plotted[0])
     for leaked in ("secret plan", ref.line1, f"{svs[0].r[0]}"):
         assert leaked not in record
@@ -330,7 +332,134 @@ def test_the_on_chart_label_points_towards_zero(ref, observed):
     """An outlying state is where the axis ends, so a label pointing away
     from zero is clipped by the plot edge. Seen in a screenshot, not a test."""
     _key, svs = observed
-    ahead = manual._trace("manual-a", svs[0], 140.0, "x")
-    behind = manual._trace("manual-b", svs[0], -140.0, "x")
+    ahead = manual._trace("manual-a", "state", svs[0].epoch, 140.0, "x", "TEME")
+    behind = manual._trace("manual-b", "elset", svs[0].epoch, -140.0, "x", "TEME")
     assert ahead["textposition"] == "middle left"
     assert behind["textposition"] == "middle right"
+
+
+
+# --------------------------------------------------------------------------- #
+#  Element sets
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def other_elsets(demo_objects):
+    """Real element sets from an object that is not the reference."""
+    obj = next(o for o in demo_objects if o.sat_no != REF and o.elsets)
+    return sorted(obj.elsets, key=lambda e: e.epoch)
+
+
+def _elset_body(els, ref, **extra) -> dict:
+    body = {"kind": "elset", "elset": f"{els.line1}\n{els.line2}",
+            "tle": [ref.line1, ref.line2], "invert": False}
+    body.update(extra)
+    return body
+
+
+def test_a_pasted_element_set_lands_where_the_element_set_series_puts_it(ref, other_elsets):
+    """Against physics._tle_offsets, the path the report uses for every element
+    set. The pasted set's epoch comes from the set itself, whose text carries
+    it to about a millisecond, so the tolerance allows for that rounding and
+    nothing visible."""
+    for els in other_elsets[:5]:
+        series = physics._tle_offsets([els], ref.satrec(), 1.0)[0][1]
+        pasted = manual.parse_pasted_elset(f"{els.line1}\n{els.line2}")
+        offset, _speed = manual.elset_offset(pasted, ref, invert=False)
+        assert offset == pytest.approx(series, abs=1e-6)
+
+
+def test_the_reference_s_own_element_set_lands_on_zero(ref):
+    out = manual.plot_manual(_elset_body(ref, ref))
+    assert out["offset"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_pasted_element_set_is_drawn_open_and_named_as_an_element_set(ref, other_elsets):
+    """Filled means measured and open means derived, the plot's convention, so
+    the pasted set is the open form of the manual star."""
+    out = manual.plot_manual(_elset_body(other_elsets[0], ref, label="TLE from ops"))
+    trace = out["trace"]
+    assert trace["marker"]["symbol"] == "star-open"
+    assert trace["text"] == ["MANUAL ELSET · TLE from ops"]
+    assert "MANUAL ELEMENT SET" in trace["hovertemplate"]
+    assert "not from UDL" in trace["hovertemplate"]
+    norad = other_elsets[0].line1[2:7].strip()
+    assert out["detail"] == f"NORAD {norad} · TEME"
+    assert ">ELSET<" in out["row"] and "TEMPORARY" in out["row"]
+    assert out["kind"] == "elset"
+
+
+def test_an_unlabelled_element_set_is_named_as_one(ref, other_elsets):
+    out = manual.plot_manual(_elset_body(other_elsets[0], ref))
+    assert "Manual element set" in out["row"]
+    assert out["trace"]["text"] == ["MANUAL ELSET"]
+
+
+def test_a_name_line_windows_endings_and_trailing_spaces_are_tolerated(other_elsets):
+    els = other_elsets[0]
+    pasted = manual.parse_pasted_elset(f"OBJECT X  \r\n{els.line1}  \r\n{els.line2}\r\n\r\n")
+    assert (pasted.line1, pasted.line2) == (els.line1, els.line2)
+
+
+@pytest.mark.parametrize("raw", ["", "1 only one line", "a\nb\nc\nd"])
+def test_anything_but_two_lines_is_refused(raw):
+    with pytest.raises(ValidationError, match="paste the two lines"):
+        manual.parse_pasted_elset(raw)
+
+
+def test_a_pasted_set_of_the_wrong_shape_is_refused(other_elsets):
+    els = other_elsets[0]
+    with pytest.raises(ValidationError, match="the element set is not a two-line element set"):
+        manual.parse_pasted_elset(f"{els.line1[:60]}\n{els.line2}")
+
+
+def test_a_pasted_set_the_parser_cannot_read_is_refused():
+    with pytest.raises(ValidationError, match="the element set could not be parsed"):
+        manual.parse_pasted_elset("1 " + "x" * 67 + "\n2 " + "y" * 67)
+
+
+def test_a_copying_error_is_caught_by_the_checksum(other_elsets):
+    """One wrong digit moves the point with no other sign, which is what the
+    checksum exists to catch."""
+    els = other_elsets[0]
+    i = els.line2.index(".") + 1             # a digit inside the inclination
+    wrong = "1" if els.line2[i] != "1" else "2"
+    typo = els.line2[:i] + wrong + els.line2[i + 1:]
+    with pytest.raises(ValidationError, match=r"line 2 checksum is .* copying error"):
+        manual.parse_pasted_elset(f"{els.line1}\n{typo}")
+
+
+def test_lines_from_two_different_objects_are_refused(ref, other_elsets):
+    """Each line's own checksum is valid, so only the object numbers say the
+    two do not belong together."""
+    with pytest.raises(ValidationError, match="both lines must be from the same element set"):
+        manual.parse_pasted_elset(f"{other_elsets[0].line1}\n{ref.line2}")
+
+
+def test_the_checksum_counts_digits_and_minus_signs_only():
+    assert manual.tle_checksum("1 2-3" + " " * 64) == 7
+    assert manual.tle_checksum("abc+." + " " * 64) == 0
+
+
+def test_an_element_set_too_far_from_the_reference_is_refused(ref, other_elsets, monkeypatch):
+    far = manual.Elset(epoch=ref.epoch + dt.timedelta(days=120),
+                       line1=other_elsets[0].line1, line2=other_elsets[0].line2)
+    monkeypatch.setattr(manual, "parse_pasted_elset", lambda raw: far)
+    with pytest.raises(ValidationError, match="SGP4 is not meaningful beyond 90 days"):
+        manual.plot_manual(_elset_body(other_elsets[0], ref))
+
+
+def test_an_unknown_kind_is_refused_and_the_default_is_a_state():
+    assert manual.parse_kind(None) == "state"
+    assert manual.parse_kind(" ELSET ") == "elset"
+    with pytest.raises(ValidationError, match="kind must be one of state, elset"):
+        manual.parse_kind("ephemeris")
+
+
+def test_the_endpoint_places_a_pasted_element_set(client, ref, other_elsets):
+    res = client.post("/api/manual-state", json=_elset_body(other_elsets[0], ref))
+    assert res.status_code == 200
+    assert res.json()["kind"] == "elset"
+    bad = client.post("/api/manual-state",
+                      json=_elset_body(other_elsets[0], ref, elset="not a set"))
+    assert bad.status_code == 400
+    assert "paste the two lines" in bad.json()["detail"]

@@ -1405,3 +1405,56 @@ def test_a_refused_manual_state_says_why_and_plots_nothing(page, live_server):
     assert plot.evaluate(_MANUAL_TRACES) == []
     assert not frame.locator(".panel.active .manbanner").is_visible()
     _assert_clean(page, allow_failed_requests=True)
+
+
+def test_a_pasted_element_set_lands_on_the_same_set_in_the_series(page, live_server):
+    """The oracle is the plot itself. Every non-reference object that can
+    anchor a reference has its latest element set in the report payload, and
+    that same set is also a point in the object's element-set series. Pasted
+    by hand, it must land on that point."""
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    plot = frame.locator(".panel.active .js-plotly-plot")
+    plot.wait_for(timeout=60_000)
+    panel = frame.locator(".panel.active")
+    body = frame.locator("body")
+    other, tle = body.evaluate("""() => {
+        const md = GROUPS[0].modeData[ST[0].mode];
+        const n = Object.keys(md.refData).find(k => k !== ST[0].ref);
+        return [Number(n), md.refData[n].tle];
+    }""")
+
+    panel.locator(".manual summary").click()
+    epoch_field = panel.locator('input[name="epoch"]')
+    assert epoch_field.is_visible()
+    panel.locator('input[name="kind"][value="elset"]').check()
+    # The switch is CSS only; check it actually switches.
+    assert not epoch_field.is_visible()
+    assert panel.locator('textarea[name="elset"]').is_visible()
+    panel.locator('textarea[name="elset"]').fill(f"{tle[0]}\n{tle[1]}")
+    panel.locator('input[name="label"]').fill("pasted")
+    panel.locator(".mango").click()
+    panel.locator(".manlist li").first.wait_for()
+
+    manual = plot.evaluate(_MANUAL_TRACES)
+    assert len(manual) == 1 and manual[0]["text"] == "MANUAL ELSET · pasted"
+    series = plot.evaluate("""(gd, n) => {
+        const i = GROUPS[0].traces.findIndex(t => t.obj === n && t.source === "elset");
+        return {x: gd.data[i].x, y: gd.data[i].y};
+    }""", other)
+    when = manual[0]["y"]
+    k = min(range(len(series["y"])),
+            key=lambda j: abs(_iso_seconds(series["y"][j]) - _iso_seconds(when)))
+    assert abs(_iso_seconds(series["y"][k]) - _iso_seconds(when)) < 0.01
+    assert abs(series["x"][k]) > 1, "a point at zero would not prove placement"
+    assert manual[0]["x"] == pytest.approx(series["x"][k], abs=1e-3)
+    assert "ELSET" in panel.locator(".manlist li").first.inner_text()
+    _assert_clean(page)
+
+
+def _iso_seconds(text):
+    import datetime as dt
+    return dt.datetime.fromisoformat(text).timestamp()

@@ -1,9 +1,15 @@
-"""A hand-entered state vector, placed on a report's waterfall for comparison.
+"""A hand-entered state vector or element set, placed on a report's waterfall.
 
 An operator sometimes holds a state that did not come from the UDL: from
 another system, a manoeuvre plan, a colleague's solution. The question is
 where it lands against what the UDL says. This module answers that one
 question and nothing else.
+
+Two kinds are accepted, and each is placed exactly as the report places its
+UDL counterpart. A state vector is taken to TEME and projected at its epoch. An
+element set is propagated to its own epoch and projected there, which is what
+the report does for every element set in its element-set series, so a pasted
+set is one point at its epoch rather than a track across the window.
 
 What makes it safe to offer is what it deliberately does not do:
 
@@ -43,6 +49,7 @@ from .pipeline import MAX_WINDOW_DAYS
 from .report.builder import esc
 
 FRAMES = ("J2000", "TEME")
+KINDS = ("state", "elset")
 
 # Not a provider colour, not the reference copper, and not in the object
 # palette, so the trace cannot be read as any object's data.
@@ -142,6 +149,30 @@ def check_state(r: np.ndarray, v: np.ndarray) -> None:
         raise ValidationError("velocity is zero; a state needs a velocity in km/s")
 
 
+def tle_checksum(line: str) -> int:
+    """The modulo-10 checksum of a TLE line: digits count as themselves, a
+    minus sign as one, everything else as nothing."""
+    return sum(int(c) if c.isdigit() else int(c == "-") for c in line[:68]) % 10
+
+
+def _elset(line1: str, line2: str, what: str) -> Elset:
+    """Shape-check and parse two TLE lines, taking the epoch from the set.
+
+    The parser does not raise on a malformed set: it returns a satellite with
+    a non-zero error and a meaningless epoch, so the error is what is checked.
+    """
+    if (len(line1) != TLE_LINE_LEN or len(line2) != TLE_LINE_LEN
+            or not line1.startswith("1 ") or not line2.startswith("2 ")):
+        raise ValidationError(
+            f"{what} is not a two-line element set: two lines of {TLE_LINE_LEN} "
+            "characters, starting 1 and 2")
+    sat = Elset(epoch=_J2000_UTC, line1=line1, line2=line2).satrec()
+    if sat.error:
+        raise ValidationError(f"{what} could not be parsed")
+    epoch = _J2000_UTC + dt.timedelta(days=sat.jdsatepoch + sat.jdsatepochF - _J2000_JD)
+    return Elset(epoch=epoch, line1=line1, line2=line2, source="manual entry")
+
+
 def parse_reference(raw) -> Elset:
     """The report's own reference element set, as the page sent it back.
 
@@ -151,42 +182,90 @@ def parse_reference(raw) -> Elset:
     if not isinstance(raw, list | tuple) or len(raw) != 2:
         raise ValidationError("the reference element set must be two TLE lines")
     line1, line2 = (str(x) for x in raw)
-    if (len(line1) != TLE_LINE_LEN or len(line2) != TLE_LINE_LEN
-            or not line1.startswith("1 ") or not line2.startswith("2 ")):
-        raise ValidationError("the reference element set is not a two-line element set")
-    # The parser does not raise on a malformed set: it returns a satellite with
-    # a non-zero error and a meaningless epoch, so the error is what is checked.
-    sat = Elset(epoch=_J2000_UTC, line1=line1, line2=line2).satrec()
-    if sat.error:
-        raise ValidationError("the reference element set could not be parsed")
-    epoch = _J2000_UTC + dt.timedelta(days=sat.jdsatepoch + sat.jdsatepochF - _J2000_JD)
-    return Elset(epoch=epoch, line1=line1, line2=line2)
+    return _elset(line1, line2, "the reference element set")
 
 
-def manual_offset(sv: StateVector, ref: Elset, invert: bool) -> tuple[float, float]:
-    """(offset in seconds, reference speed in km/s) for one state.
+def parse_pasted_elset(raw) -> Elset:
+    """An element set pasted by hand, as two lines or as three with a name.
 
-    The same three steps as physics._state_offsets, for one vector rather than
-    a series: propagate the reference to the state's epoch, take the state to
-    TEME, project onto the reference's direction of travel.
+    Stricter than the reference, because this one was typed or copied: the
+    checksums are verified, since a single wrong digit in a pasted set moves
+    the point without any other sign, and the two lines must belong to the
+    same object. Trailing spaces and Windows line endings are tolerated; a
+    name line above the set is accepted and not used.
     """
-    gap = abs((sv.epoch - ref.epoch).total_seconds()) / 86400.0
+    lines = [line.rstrip() for line in str(raw or "").splitlines() if line.strip()]
+    if len(lines) == 3 and not lines[0].startswith("1 "):
+        lines = lines[1:]
+    if len(lines) != 2:
+        raise ValidationError(
+            "paste the two lines of the element set; a name line above them is allowed")
+    line1, line2 = lines
+    els = _elset(line1, line2, "the element set")
+    for n, line in ((1, line1), (2, line2)):
+        want = tle_checksum(line)
+        if line[68] != str(want):
+            raise ValidationError(
+                f"line {n} checksum is {line[68]} but the line sums to {want}: "
+                "check the element set for a copying error")
+    if line1[2:7] != line2[2:7]:
+        raise ValidationError(
+            f"line 1 is for object {line1[2:7].strip()} and line 2 for "
+            f"{line2[2:7].strip()}; both lines must be from the same element set")
+    return els
+
+
+def offset_against(epoch: dt.datetime, r_teme: np.ndarray, ref: Elset,
+                   invert: bool) -> tuple[float, float]:
+    """(offset in seconds, reference speed in km/s) for a TEME position.
+
+    Propagate the reference to the epoch and project onto its direction of
+    travel: the step both kinds share, and the same one the report's series
+    take for every point.
+    """
+    gap = abs((epoch - ref.epoch).total_seconds()) / 86400.0
     if gap > MAX_WINDOW_DAYS:
         raise ValidationError(
             f"epoch is {gap:,.0f} days from the reference element set "
             f"({ref.epoch:%d %b %Y %H:%M}Z). SGP4 is not meaningful beyond "
-            f"{MAX_WINDOW_DAYS} days, so this state cannot be placed against it.")
-    r_ref, v_ref = propagate(ref.satrec(), sv.epoch)
+            f"{MAX_WINDOW_DAYS} days, so this cannot be placed against it.")
+    r_ref, v_ref = propagate(ref.satrec(), epoch)
     sign = -1.0 if invert else 1.0
-    offset = sign * along_track_offset(to_teme(sv), r_ref, v_ref)
+    offset = sign * along_track_offset(r_teme, r_ref, v_ref)
     return offset, float(np.linalg.norm(v_ref))
 
 
-def _trace(uid: str, sv: StateVector, offset: float, label: str) -> dict:
-    """A Plotly trace for one manual state, marked on the chart itself."""
-    on_chart = f"MANUAL · {label}" if label else "MANUAL"
-    hover = (f"<b>MANUAL STATE</b> · not from UDL · not saved"
-             f"{'<br>' + esc(label) if label else ''}<br>{sv.frame}"
+def manual_offset(sv: StateVector, ref: Elset, invert: bool) -> tuple[float, float]:
+    """A state vector, as physics._state_offsets places one: to TEME, then
+    projected at its own epoch."""
+    return offset_against(sv.epoch, to_teme(sv), ref, invert)
+
+
+def elset_offset(els: Elset, ref: Elset, invert: bool) -> tuple[float, float]:
+    """An element set, as physics._tle_offsets places one: propagated to its
+    own epoch, which gives a TEME position, then projected there."""
+    r_obs, _v = propagate(els.satrec(), els.epoch)
+    return offset_against(els.epoch, r_obs, ref, invert)
+
+
+# How each kind is drawn and named. Filled means measured and open means
+# derived, the plot's existing convention, so a pasted element set is the open
+# form of the same star, just as the element-set series are open squares.
+_LOOK = {
+    "state": {"symbol": "star", "fill": MANUAL_COLOUR, "chart": "MANUAL",
+              "hover": "MANUAL STATE", "tag": "STATE", "unnamed": "Manual state"},
+    "elset": {"symbol": "star-open", "fill": MANUAL_RING, "chart": "MANUAL ELSET",
+              "hover": "MANUAL ELEMENT SET", "tag": "ELSET", "unnamed": "Manual element set"},
+}
+
+
+def _trace(uid: str, kind: str, epoch: dt.datetime, offset: float, label: str,
+           detail: str) -> dict:
+    """A Plotly trace for one manual point, marked on the chart itself."""
+    look = _LOOK[kind]
+    on_chart = f"{look['chart']} · {label}" if label else look["chart"]
+    hover = (f"<b>{look['hover']}</b> · not from UDL · not saved"
+             f"{'<br>' + esc(label) if label else ''}<br>{esc(detail)}"
              "<br>%{y|%d %b %H:%M:%S}Z<br>offset %{x:.1f} s<extra></extra>")
     return {
         "type": "scatter",
@@ -194,13 +273,13 @@ def _trace(uid: str, sv: StateVector, offset: float, label: str) -> dict:
         "uid": uid,
         "name": "manual",
         "x": [offset],
-        "y": [sv.epoch.isoformat()],
+        "y": [epoch.isoformat()],
         "showlegend": False,
         "cliponaxis": False,
-        "marker": {"symbol": "star", "size": 18, "color": MANUAL_COLOUR,
+        "marker": {"symbol": look["symbol"], "size": 18, "color": look["fill"],
                    "line": {"color": MANUAL_RING, "width": 2}},
         "text": [esc(on_chart)],
-        # Towards zero. A manual state far from the datum is usually the
+        # Towards zero. A manual point far from the datum is usually the
         # outermost point, so the axis ends at it and a label pointing outwards
         # is cut off by the plot edge; zero is always inside the plot.
         "textposition": "middle left" if offset >= 0 else "middle right",
@@ -209,24 +288,35 @@ def _trace(uid: str, sv: StateVector, offset: float, label: str) -> dict:
     }
 
 
-def _row(uid: str, sv: StateVector, offset: float, km: float, label: str) -> str:
-    """The rail entry for one manual state, with its remove control."""
-    name = esc(label) if label else "Manual state"
+def _row(uid: str, kind: str, epoch: dt.datetime, offset: float, km: float,
+         label: str, detail: str) -> str:
+    """The rail entry for one manual point, with its remove control."""
+    look = _LOOK[kind]
+    name = esc(label) if label else look["unnamed"]
     return (
         f'<li class="manrow" data-uid="{uid}">'
         '<div class="manhead"><span class="mantag">TEMPORARY</span>'
+        f'<span class="mankind">{look["tag"]}</span>'
         f'<span class="manname">{name}</span>'
-        '<button class="manx" type="button" aria-label="Remove this manual state">'
+        '<button class="manx" type="button" aria-label="Remove this manual entry">'
         "&times;</button></div>"
         f'<div class="manval">{offset:+.1f} s · ~{km:,.0f} km · '
-        f"{sv.epoch:%d %b %H:%M:%S}Z · {sv.frame}</div></li>")
+        f"{epoch:%d %b %H:%M:%S}Z · {esc(detail)}</div></li>")
 
 
-def plot_manual(body: dict) -> dict:
-    """Validate one hand-entered state and place it against a reference.
+def parse_kind(raw) -> str:
+    kind = str(raw or "state").strip().lower()
+    if kind not in KINDS:
+        raise ValidationError(f"kind must be one of {', '.join(KINDS)}")
+    return kind
 
-    -> {"offset", "km", "epoch", "frame", "label", "trace", "row"}.
-    """
+
+def _observe(kind: str, body: dict, ref: Elset, invert: bool) -> tuple:
+    """-> (epoch, offset, reference speed, detail) for either kind."""
+    if kind == "elset":
+        els = parse_pasted_elset(body.get("elset"))
+        offset, speed = elset_offset(els, ref, invert)
+        return els.epoch, offset, speed, f"NORAD {els.line1[2:7].strip()} · TEME"
     sv = StateVector(
         epoch=parse_epoch(body.get("epoch", "")),
         r=_vector(body, ("x", "y", "z"), "km"),
@@ -234,17 +324,29 @@ def plot_manual(body: dict) -> dict:
         frame=parse_frame(body.get("frame")),
         source="manual entry")
     check_state(sv.r, sv.v)
+    offset, speed = manual_offset(sv, ref, invert)
+    return sv.epoch, offset, speed, sv.frame
+
+
+def plot_manual(body: dict) -> dict:
+    """Validate one hand-entered state vector or element set and place it
+    against a reference.
+
+    -> {"kind", "offset", "km", "epoch", "detail", "label", "trace", "row"}.
+    """
+    kind = parse_kind(body.get("kind"))
     label = parse_label(body.get("label"))
     ref = parse_reference(body.get("tle"))
-    offset, speed = manual_offset(sv, ref, bool(body.get("invert")))
+    epoch, offset, speed, detail = _observe(kind, body, ref, bool(body.get("invert")))
     km = abs(offset) * speed
     uid = "manual-" + uuid.uuid4().hex[:12]
     return {
+        "kind": kind,
         "offset": round(offset, 3),
         "km": round(km, 1),
-        "epoch": sv.epoch.isoformat(),
-        "frame": sv.frame,
+        "epoch": epoch.isoformat(),
+        "detail": detail,
         "label": label,
-        "trace": _trace(uid, sv, offset, label),
-        "row": _row(uid, sv, offset, km, label),
+        "trace": _trace(uid, kind, epoch, offset, label, detail),
+        "row": _row(uid, kind, epoch, offset, km, label, detail),
     }
