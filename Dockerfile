@@ -29,7 +29,12 @@
 # all resolve to cp313 or abi3 wheels, and the application served a full render
 # of 4,545,975 bytes on it. Pinned to the patch version rather than 3.13, so
 # the image that was reasoned about is the image that gets built.
-ARG PYTHON_TAG=3.13.15-slim
+#
+# 3.13.18 for 1.8.2. The scan of 1.8.1 named eleven CVEs against 3.13.15, four
+# of them critical or high (CVE-2026-115557, -19445, -19553, -82049), with
+# fixed-in versions of 3.13.16 or 3.13.18 in the 3.13 series. 3.13.18 is the
+# highest of those, so it clears every one that has a 3.13 fix.
+ARG PYTHON_TAG=3.13.18-slim
 
 # --------------------------------------------------------------------------- #
 #  Stage 1: wheels

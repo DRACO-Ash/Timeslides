@@ -93,7 +93,9 @@ def test_the_base_image_is_pinned_to_a_patch_version(dockerfile):
     major, minor, patch = (int(p) for p in version.split("-")[0].split("."))
     assert (major, minor) >= (3, 13), f"{version} cannot clear the Python CVEs"
     if (major, minor) == (3, 13):
-        assert patch >= 15, f"{version} is below the fixed-in versions the scan named"
+        # 15 for the 1.6 scan; 18 for the 1.8.1 scan, whose highest 3.13
+        # fixed-in version was 3.13.18 (CVE-2026-115557 among others).
+        assert patch >= 18, f"{version} is below the fixed-in versions the scan named"
 
 
 def test_the_base_image_still_goes_through_the_registry_mirror(dockerfile):

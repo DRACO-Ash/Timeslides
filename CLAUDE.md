@@ -28,7 +28,15 @@ alone has already cost several more.
   angles with SGP4's own secular rates (`mdot`, `argpdot`, `nodedot`) or the
   synthetic reference does not sit at zero against itself.
 ● **Credentials come from the environment.** `UDL_USER` and `UDL_PASS`, never a
-  file in the repo. The application fails closed at import without them.
+  file in the repo. The application fails closed at boot without them, with one
+  exception: the platform's DAST stage starts the image with no secrets and
+  `APPSTORE_DAST_SCAN=true`, and only that combination starts in demo mode.
+  With credentials present the flag changes nothing.
+● **Logs follow the App Store standard, on stdout only.** One JSON object per
+  line: `timestamp` (UTC, ms), `severity_text`, `severity_number`, `body`, flat
+  `attributes`. The handler is on the root logger and takes over uvicorn's,
+  because the image starts with `python -m uvicorn`, whose launcher installs
+  stderr handlers before importing the app. Nothing may reach stderr.
 ● **The client-side code stays in separate `.js` and `.css` files** so the gate
   analyses it. Inlining it into Python strings would hide it from analysis as
   well as from coverage. That trade has been considered and refused.
@@ -51,6 +59,9 @@ alone has already cost several more.
   `tests/conftest.py`.
 ● Playwright is not installed there, so the browser suite module-skips. Correct,
   and it should stay visible.
+● Later stages judge the running image: **DAST** (no secrets, scans port 8080),
+  **Logging** (stdout, the standard's JSON shape) and **Container Scan**.
+  `tests/test_boot.py` runs the image's own CMD that way, locally.
 ● **A failing test stage uploads no artefacts**, so the scan gets no coverage
   report and the gate reads 0.0%. A test that fails for an environmental reason
   therefore breaks the coverage gate. Structural checks use `repo_file()`, which

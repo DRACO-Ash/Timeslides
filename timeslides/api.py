@@ -12,6 +12,7 @@ Route notes that matter for the platform:
 from __future__ import annotations
 
 import datetime as dt
+import time
 from typing import Annotated, Optional
 
 from fastapi import FastAPI, Query, Request, Response
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import audit
-from .audit import event
+from .audit import event, request_fields
 from .config import Settings, load_settings
 from .errors import TimeslidesError, ValidationError
 from .groups import GroupStore
@@ -103,6 +104,10 @@ def create_app(settings: Settings = None, store=None, runner=None,
     surface is testable in-process with no network and no volume."""
     settings = settings or load_settings()
     audit.configure(settings.log_level)
+    if settings.dast_scan:
+        event("boot.dast_scan", demo=settings.demo,
+              reason="no UDL credentials, so synthetic data" if settings.demo
+              else "credentials present, so the scan sees the configured service")
     store = store or GroupStore(settings.groups_file)
     app = FastAPI(title="Timeslides", docs_url=None, redoc_url=None,
                   openapi_url=None)
@@ -127,6 +132,7 @@ def create_app(settings: Settings = None, store=None, runner=None,
     app.state.runner = runner
     app.state.storage = storage
 
+    _register_request_log(app)
     _register_error_handler(app)
     _register_ui(app, settings, storage)
     _register_groups(app, store)
@@ -187,10 +193,25 @@ def _seed_groups(store) -> None:
 # --------------------------------------------------------------------------- #
 #  Errors: one place decides what a failure looks like to a caller
 # --------------------------------------------------------------------------- #
+def _register_request_log(app: FastAPI) -> None:
+    """One line per request, in the shape the platform's logging standard
+    asks of a request line. See audit.request_fields for what it carries and
+    what it never does."""
+    @app.middleware("http")
+    async def log_request(request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        event("http.request", **request_fields(request),
+              **{"http.response.status_code": response.status_code,
+                 "http.server.request.duration_ms":
+                     round((time.perf_counter() - started) * 1000, 1)})
+        return response
+
+
 def _register_error_handler(app: FastAPI) -> None:
     @app.exception_handler(TimeslidesError)
     async def handle(request: Request, exc: TimeslidesError):
-        event("request.rejected", path=request.url.path,
+        event("request.rejected", **request_fields(request),
               error=type(exc).__name__, detail=str(exc))
         return JSONResponse(status_code=exc.status,
                             content={"error": type(exc).__name__, "detail": str(exc)})

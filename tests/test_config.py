@@ -301,3 +301,29 @@ def test_a_storage_path_given_as_a_string_is_usable():
     assert isinstance(settings.storage_path, Path)
     assert settings.groups_file == Path("/mnt/example/groups.json")
     assert settings.runs_path == Path("/mnt/example/runs")
+
+
+# --------------------------------------------------------------------------- #
+#  The platform's DAST stage
+# --------------------------------------------------------------------------- #
+def test_a_dast_scan_with_no_credentials_starts_in_demo_mode():
+    """The scan gives the container none of its secrets. Failing closed meant
+    nothing answered on 8080 and the stage reported no_report."""
+    s = load_settings({"APPSTORE_DAST_SCAN": "true"})
+    assert s.demo is True and s.dast_scan is True
+
+
+def test_a_dast_flag_never_puts_a_configured_deployment_onto_synthetic_data():
+    s = load_settings({"APPSTORE_DAST_SCAN": "true", "UDL_USER": "u", "UDL_PASS": "p"})
+    assert s.demo is False and s.dast_scan is True
+
+
+@pytest.mark.parametrize("env", [{}, {"APPSTORE_DAST_SCAN": "false"}, {"APPSTORE_DAST_SCAN": ""}])
+def test_without_the_scan_flag_a_missing_credential_still_fails_closed(env):
+    with pytest.raises(ConfigError, match="UDL_USER and UDL_PASS"):
+        load_settings(env)
+
+
+def test_outside_a_scan_half_a_credential_pair_still_fails_closed():
+    with pytest.raises(ConfigError, match="UDL_USER and UDL_PASS"):
+        load_settings({"UDL_USER": "u"})

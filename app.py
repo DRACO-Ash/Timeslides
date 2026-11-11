@@ -16,8 +16,17 @@ render thread pool, not from extra processes.
 
 from __future__ import annotations
 
-from timeslides.api import create_app
-from timeslides.config import load_settings
+import os
+
+from timeslides import audit
+
+# Before anything that can fail. A refused start, such as missing credentials,
+# is then one JSON line on stdout rather than a traceback Python prints to
+# stderr, which is what the platform's logging check reported against 1.8.1.
+audit.configure((os.environ.get("LOG_LEVEL") or "INFO").strip().upper())
+
+from timeslides.api import create_app  # noqa: E402  (logging comes first)
+from timeslides.config import load_settings  # noqa: E402
 
 settings = load_settings()
 app = create_app(settings=settings)

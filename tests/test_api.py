@@ -703,7 +703,7 @@ def test_a_store_that_cannot_be_seeded_logs_and_lets_the_app_start(tmp_path, cap
         assert c.get("/healthz").status_code == 200
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
              if line.startswith("{")]
-    failures = [line for line in lines if line["msg"] == "boot.seed_failed"]
+    failures = [line["attributes"] for line in lines if line["body"] == "boot.seed_failed"]
     assert len(failures) == 1
     assert failures[0]["error"] == "ValidationError"
     assert "fsGroup" in failures[0]["detail"]
@@ -1094,9 +1094,9 @@ def test_the_boot_probe_is_recorded_as_an_audit_event(tmp_path, capsys):
     _unwritable_app(tmp_path)
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
              if line.startswith("{")]
-    probes = [line for line in lines if line["msg"] == "boot.storage"]
+    probes = [line["attributes"] for line in lines if line["body"] == "boot.storage"]
     assert len(probes) == 1
     assert probes[0]["writable"] is False
     assert probes[0]["mode"] == "memory"
     assert "EROFS" in probes[0]["detail"]
-    assert any(line["msg"] == "storage.memory_fallback" for line in lines)
+    assert any(line["body"] == "storage.memory_fallback" for line in lines)

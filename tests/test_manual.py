@@ -305,7 +305,7 @@ def test_the_endpoint_places_a_state_and_records_only_that_it_did(
     assert res.json()["trace"]["uid"].startswith("manual-")
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
              if line.startswith("{")]
-    plotted = [line for line in lines if line["msg"] == "manual_state.plotted"]
+    plotted = [line["attributes"] for line in lines if line["body"] == "manual_state.plotted"]
     assert len(plotted) == 1
     assert plotted[0]["labelled"] is True
     assert plotted[0]["kind"] == "state"

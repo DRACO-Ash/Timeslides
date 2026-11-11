@@ -134,6 +134,9 @@ class Settings:
     udl_timeout_s: int = 60
     max_results: int = 5000
     log_level: str = "INFO"
+    # Set by the platform when its DAST stage starts the container. See
+    # load_settings for the one thing it changes.
+    dast_scan: bool = False
 
     def __post_init__(self):
         """Coerce storage_path to a Path.
@@ -169,21 +172,36 @@ class Settings:
 
 
 def load_settings(env=None) -> Settings:
-    """Build Settings from the environment. Called once at boot."""
+    """Build Settings from the environment. Called once at boot.
+
+    The App Store's DAST stage starts the container with none of its
+    environment variables or secrets, sets APPSTORE_DAST_SCAN=true, and scans
+    whatever answers on 8080. Failing closed without credentials meant nothing
+    answered, so 1.8.1 was blocked with "no_report". In that one case, a scan
+    with no credentials, the application starts in demo mode: synthetic data,
+    no UDL calls, so there is no credential to fake and nothing upstream for
+    the scanner to reach. With credentials present the flag changes nothing,
+    so it can never put a configured deployment onto synthetic data; without
+    the flag, a missing credential still fails closed exactly as before.
+    """
     env = os.environ if env is None else env
+    udl_user = (env.get("UDL_USER") or "").strip()
+    udl_pass = env.get("UDL_PASS") or ""
+    dast_scan = _flag(env, "APPSTORE_DAST_SCAN")
     settings = Settings(
         udl_base=(env.get("UDL_BASE") or DEFAULT_UDL_BASE).rstrip("/"),
-        udl_user=(env.get("UDL_USER") or "").strip(),
-        udl_pass=env.get("UDL_PASS") or "",
+        udl_user=udl_user,
+        udl_pass=udl_pass,
         host=env.get("HOST", DEFAULT_HOST).strip(),
         port=_int(env, "PORT", DEFAULT_PORT, 1, 65535),
         storage_path=_storage_path(env.get("STORAGE_MOUNT_PATH")),
         classification=(env.get("CLASSIFICATION") or "UNCLASSIFIED").strip(),
-        demo=_flag(env, "TIMESLIDES_DEMO"),
+        demo=_flag(env, "TIMESLIDES_DEMO") or (dast_scan and not (udl_user and udl_pass)),
         udl_rate_per_min=_int(env, "UDL_RATE_PER_MIN", 60, 1, 600),
         udl_timeout_s=_int(env, "UDL_TIMEOUT_S", 60, 5, 600),
         max_results=_int(env, "UDL_MAX_RESULTS", 5000, 1, 20000),
         log_level=(env.get("LOG_LEVEL") or "INFO").strip().upper(),
+        dast_scan=dast_scan,
     )
     if not settings.demo:
         settings.require_udl()                     # fail closed at boot
