@@ -190,6 +190,24 @@ def find_float_equality(source: str) -> list:
     return out
 
 
+def find_list_copy_in_iteration(source: str) -> list:
+    """Lines where a for loop or comprehension iterates over list(x).
+
+    Gate finding python:S7504, "Remove this unnecessary list() call on an
+    already iterable object", raised on audit.py in 1.8.2. The copy was there
+    because the loop body could have changed the dict; the fix was a loop
+    body that cannot, not a copy. Ruff has no rule for it.
+    """
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        it = getattr(node, "iter", None)
+        if (isinstance(node, ast.For | ast.AsyncFor | ast.comprehension)
+                and isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
+                and it.func.id == "list" and len(it.args) == 1 and not it.keywords):
+            out.append(it.lineno)
+    return sorted(out)       # ast.walk is breadth-first, not line order
+
+
 def find_nested_quantifiers(source: str) -> list:
     out = []
     for m in re.finditer(r"""re\.compile\(\s*r?['"](.+?)['"]""", source):
@@ -446,6 +464,13 @@ def test_no_equality_check_against_a_float_literal():
                          "bound instead:\n" + "\n".join(found))
 
 
+def test_no_iteration_over_a_list_copy():
+    found = [f"{p.relative_to(ROOT)}:{line}" for p in _py_files()
+             for line in find_list_copy_in_iteration(p.read_text(encoding="utf-8"))]
+    assert found == [], ("iterating over list(x) copies an iterable for nothing; "
+                         "if the loop changes x, change the loop:\n" + "\n".join(found))
+
+
 def test_the_listen_address_is_configuration_rather_than_a_literal():
     """Gate finding: "Avoid binding the application to all network interfaces."
 
@@ -599,6 +624,22 @@ def test_the_float_equality_detector_leaves_bounds_integers_and_prose_alone():
     source = ('if speed < 1e-3:\n    pass\nn = count == 0\nm = x is None\n'
               '# speed == 0.0 in a comment\nnote = "speed == 0.0"\n')
     assert find_float_equality(source) == []
+
+
+def test_the_list_copy_detector_finds_loops_and_comprehensions():
+    source = ("for k in list(d):\n    pass\n"
+              "xs = [v for v in list(d)]\n"
+              "async def f():\n    async for v in list(d):\n        pass\n")
+    assert find_list_copy_in_iteration(source) == [1, 3, 5]
+
+
+def test_the_list_copy_detector_leaves_other_uses_of_list_alone():
+    source = ("snapshot = list(d)\n"
+              "for k in sorted(d):\n    pass\n"
+              "for k in d.values():\n    pass\n"
+              "for k in list(a, b):\n    pass\n"
+              "# for k in list(d): in a comment\n")
+    assert find_list_copy_in_iteration(source) == []
 
 
 def test_every_detector_in_this_file_is_exercised_by_a_test():

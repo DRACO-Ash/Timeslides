@@ -138,9 +138,16 @@ def _take_over_library_loggers() -> None:
     while ours went to stdout in the standard's: found by running the built
     image the way the DAST stage does, after a test that launched app.py
     directly had passed. File handlers and other sinks are not touched.
+
+    Walks the loggers that already exist and calls nothing that creates one,
+    so the registry cannot change size underneath the loop and needs no copy
+    taken first. Placeholders, names nothing has asked for yet, have no
+    handlers and are skipped. (1.8.2 copied the keys with list() and looked
+    each up with getLogger; the gate flagged the copy, python:S7504.)
     """
-    for name in list(logging.root.manager.loggerDict):
-        logger = logging.getLogger(name)
+    for logger in logging.root.manager.loggerDict.values():
+        if not isinstance(logger, logging.Logger):
+            continue
         console = [h for h in logger.handlers if type(h) is logging.StreamHandler
                    and h.stream in (sys.stderr, sys.stdout)]
         if console:
