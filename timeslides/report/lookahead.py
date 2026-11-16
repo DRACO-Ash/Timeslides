@@ -258,7 +258,7 @@ def _change_item(track: Track, now: dt.datetime) -> str:
     return (f'<li class="ev ev-change"><span class="evtag">RATE CHANGE</span>'
             f"<b>{esc(track.name)}</b> drift {c.before:+.0f} → {c.after:+.0f} s/day "
             f"around {_when(now, c.t)}"
-            '<span class="evnote">probable manoeuvre · forecast uses data since</span></li>')
+            '<span class="evnote">probable manoeuvre · forecast uses only the data after it</span></li>')
 
 
 def _pass_item(e: Pass, now: dt.datetime, far: bool) -> str:
@@ -289,6 +289,8 @@ def view(tracks: list[Track], now: dt.datetime, horizon: int) -> dict:
          "yanchor": "top", "yshift": -4, "showarrow": False,
          "text": f"LOOK-AHEAD · {horizon} DAYS · straight-line forecast, "
                  "assumes no further manoeuvre",
+         # backed, because a forecast line can run straight through it
+         "bgcolor": "rgba(13,20,40,0.92)", "borderpad": 3,
          "font": {"color": "#739BCF", "size": 10.5, "family": FONT}},
     ]
     annotations += [

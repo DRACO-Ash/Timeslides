@@ -90,7 +90,8 @@ def test_the_seven_day_view_names_the_change_then_the_passes_in_order(scenario):
     assert "<b>CHASER</b> passes <b>TARGET</b>" in items
     assert "<b>CHASER</b> passes <b>INSPECTOR</b>" in items
     assert 'class="ev ev-far"' in items, "the pass beyond the horizon is named, faded"
-    assert "probable manoeuvre" in items
+    assert "probable manoeuvre · forecast uses only the data after it</span>" in items, \
+        "the note must finish its sentence: an earlier version ended on 'since'"
 
 
 def test_the_plot_says_rate_change_and_never_asserts_intent(scenario):
