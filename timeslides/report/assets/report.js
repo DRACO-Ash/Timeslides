@@ -18,7 +18,7 @@ const SRCLBL = REPORT_DATA.srclbl;
 const ST = {};
 GROUPS.forEach(g => {
   ST[g.id] = { sources:new Set(g.present), hidden:new Set(),
-                mode:g.defaultMode, ref:String(g.defaultRef), manual:[] };
+                mode:g.defaultMode, ref:String(g.defaultRef), manual:[], horizon:null };
   g.cards = []; g.vkms = 1;
 });
 
@@ -66,7 +66,7 @@ function applyData(g){
   if(sel && sel.value !== st.ref) sel.value = st.ref;
   panelEl(g.id).querySelectorAll(".modeseg button").forEach(b =>
     b.classList.toggle("active", b.dataset.mode===st.mode));
-  buildCards(g); buildRelative(g); apply(g); replotManual(g);
+  buildCards(g); buildRelative(g); apply(g); replotManual(g); drawAhead(g);
 }
 
 function setRef(g, refNo){ ST[g.id].ref = String(refNo); applyData(g); }
@@ -103,6 +103,12 @@ function cardKmLine(c, vkms){
        + " km</b> along-track";
 }
 
+/* Set by the server when the track changed rate in the window: the drift
+   shown is then the rate since, and this says what it was before. */
+function driftNote(c){
+  return c.driftNote ? '<br><span class="driftnote">' + esc(c.driftNote) + "</span>" : "";
+}
+
 function cardMarkup(c, vkms){
   const offset = c.absent ? "&mdash;" : fmt(c.current);
   const unit = c.absent ? "" : "s";
@@ -116,7 +122,7 @@ function cardMarkup(c, vkms){
       </div>
       <div class="readout">
         <div class="big" style="color:${c.colour}">${offset}<span class="u">${unit}</span></div>
-        <div class="sub">drift <b>${drift}</b> s/day<br>${cardCounts(c)}</div>
+        <div class="sub">drift <b>${drift}</b> s/day${driftNote(c)}<br>${cardCounts(c)}</div>
       </div>
       <div class="kmline">${cardKmLine(c, vkms)}</div>
     </div>`;
@@ -196,6 +202,7 @@ function apply(g){
   const st = ST[g.id];
   const vis = g.traces.map(t => st.sources.has(t.source) && !st.hidden.has(t.obj));
   if(window.Plotly) Plotly.restyle(g.divId, {visible: vis}, ownTraces(g));
+  aheadVisibility(g);
   const panel = panelEl(g.id);
   panel.querySelectorAll(".srcseg .srcchip").forEach(b =>
     b.classList.toggle("active", st.sources.has(b.dataset.src)));
@@ -251,6 +258,50 @@ function replotManual(g){
   held.forEach(m => plotManual(g, m.body));
 }
 
+/* The Look-ahead. The server builds every horizon's view, traces, shapes,
+ * annotations and an escaped event list (report/lookahead.py); this picks the
+ * one for the chosen horizon and draws it, and nothing else. */
+function aheadHorizon(g){
+  const st = ST[g.id];
+  const ahead = g.modeData[st.mode].refData[st.ref].ahead;
+  return ahead ? (st.horizon ?? ahead.default) : null;
+}
+
+function aheadView(g){
+  const st = ST[g.id];
+  const ahead = g.modeData[st.mode].refData[st.ref].ahead;
+  return ahead ? ahead.views[aheadHorizon(g)] : null;
+}
+
+function drawAhead(g){
+  const v = aheadView(g);
+  const list = document.getElementById("ahead-"+g.id);
+  if(list) list.innerHTML = v ? v.items : "";
+  panelEl(g.id).querySelectorAll(".horizon button").forEach(b =>
+    b.classList.toggle("active", b.dataset.h === aheadHorizon(g)));
+  if(!window.Plotly) return;
+  const gd = document.getElementById(g.divId);
+  const old = (gd.data || []).map((t, i) => String(t.uid).startsWith("ahead-") ? i : -1)
+    .filter(i => i >= 0);
+  if(old.length) Plotly.deleteTraces(g.divId, old);
+  if(v && v.traces.length) Plotly.addTraces(g.divId, v.traces);
+  Plotly.relayout(g.divId, {shapes: v ? v.shapes : [], annotations: v ? v.annotations : []});
+  aheadVisibility(g);
+}
+
+/* An isolated object's forecast goes with it. Only the projected line and
+   band are per object; the pass and rate-change markers stay. */
+function aheadVisibility(g){
+  if(!window.Plotly) return;
+  const hidden = ST[g.id].hidden;
+  const idx = [], vis = [];
+  (document.getElementById(g.divId).data || []).forEach((t, i) => {
+    const m = /^ahead-(?:line|band)-(\d+)$/.exec(String(t.uid));
+    if(m){ idx.push(i); vis.push(!hidden.has(Number(m[1]))); }
+  });
+  if(idx.length) Plotly.restyle(g.divId, {visible: vis}, idx);
+}
+
 function showTab(id){
   document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", Number(p.dataset.panel)===id));
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", Number(t.dataset.tab)===id));
@@ -275,6 +326,8 @@ function init(){
     const form = document.getElementById("manform-"+g.id);
     if(form) form.querySelector(".mango").addEventListener("click", () =>
       plotManual(g, Object.fromEntries(new FormData(form))));
+    panelEl(g.id).querySelectorAll(".horizon button").forEach(b =>
+      b.addEventListener("click", () => { ST[g.id].horizon = b.dataset.h; drawAhead(g); }));
     const list = document.getElementById("manlist-"+g.id);
     if(list) list.addEventListener("click", e => {
       const row = e.target.closest(".manx") ? e.target.closest(".manrow") : null;

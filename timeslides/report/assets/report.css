@@ -242,3 +242,34 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 .manform .el-only{display:none}
 .manform:has(input[name="kind"][value="elset"]:checked) .el-only{display:flex}
 .manform:has(input[name="kind"][value="elset"]:checked) .sv-only{display:none}
+
+/* The Look-ahead. First in the rail, with a blue edge rather than the manual
+   section's copper, because it is the report's own reading of its data. */
+.ahead{border:1px solid rgba(115,155,207,0.38); border-radius:12px; padding:11px 12px 9px;
+  background:linear-gradient(180deg,rgba(56,95,175,0.16),rgba(18,26,48,0.55))}
+.ahead h2{display:flex; justify-content:space-between; align-items:center; gap:8px; color:var(--blue-l)}
+.horizon{display:flex; gap:3px; background:var(--panel); border:1px solid var(--line);
+  border-radius:8px; padding:2px}
+.horizon button{appearance:none; border:0; background:transparent; cursor:pointer;
+  font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; padding:3px 7px;
+  border-radius:6px; color:var(--muted)}
+.horizon button:hover{color:var(--text)}
+.horizon button.active{background:linear-gradient(180deg,var(--blue-l),var(--blue));
+  color:#0B1020; font-weight:700}
+.horizon button:focus-visible{outline:2px solid var(--blue-l); outline-offset:1px}
+.aheadlist{list-style:none; margin:6px 0 0; padding:0; display:flex; flex-direction:column; gap:7px}
+.ev{font-size:12px; color:var(--text); line-height:1.4; border-left:3px solid var(--blue-l);
+  padding:3px 0 3px 9px}
+.ev b{font-weight:600}
+.evwhen{display:inline-block; font-family:var(--mono); font-size:11px; font-weight:700;
+  color:#0B1020; background:var(--blue-l); border-radius:5px; padding:1px 6px; margin-right:7px}
+.evtag{display:inline-block; font-family:var(--mono); font-size:8.5px; letter-spacing:.12em;
+  font-weight:700; color:#0B1020; background:#E0952A; border-radius:5px; padding:2px 6px;
+  margin-right:7px}
+.evnote{display:block; font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:2px}
+.ev-change{border-left-color:#E0952A}
+.ev-quiet{border-left-color:var(--green)}
+.ev-far{opacity:.55; border-left-color:var(--line-strong)}
+.ev-far .evwhen{background:transparent; color:var(--muted); border:1px solid var(--line-strong)}
+.ahead .hint{margin:8px 0 0}
+.driftnote{color:#E0952A}

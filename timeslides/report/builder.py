@@ -173,7 +173,7 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
     ref_elset = reference_elset(list(objects_by_sat.values()), ref_no, ref_epoch)
     ref_sat = ref_elset.satrec()
     colour = _sat_colours(sat_order, ref_no)
-    xs, ys, srcs, colours, cards = [], [], [], [], []
+    xs, ys, srcs, colours, cards, tracked = [], [], [], [], [], []
     for s in sat_order:
         obj = objects_by_sat.get(s)
         nm = names.get(s, f"OBJECT {s}")
@@ -185,6 +185,21 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
         colours.extend([colour[s]] * len(present))
         card.update(colour=colour[s], is_ref=(s == ref_no))
         cards.append(card)
+        tracked.append({"norad": s, "name": nm, "colour": colour[s], "is_ref": s == ref_no,
+                        "points": [(e, off) for key in present
+                                   for e, off, _src in series.get(key, [])]})
+    # Imported here: lookahead uses this module's escaper, so a top-level
+    # import in either direction would be circular.
+    from . import lookahead
+    ahead, changed = lookahead.build(tracked, window[1])
+    for card in cards:
+        rate = changed.get(card["norad"])
+        if rate:
+            # The rate since the change, not an average across it. Before
+            # this, a burn mid-window showed a rate the object never flew, and
+            # the relative-motion rows, which read it, mistimed every pass.
+            card["drift"] = rate["rate"]
+            card["driftNote"] = f"since rate change · was {rate['was']:+.1f}"
     _r0, v0 = propagate(ref_sat, window[0])
     return {
         "x": xs,
@@ -195,7 +210,8 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
         "vkms": round(float(np.linalg.norm(v0)), 3),
         # The datum itself, so a hand-entered state is measured against
         # exactly what this dataset was. See timeslides/manual.py.
-        "tle": [ref_elset.line1, ref_elset.line2]}
+        "tle": [ref_elset.line1, ref_elset.line2],
+        "ahead": ahead}
 
 
 # --------------------------------------------------------------------------- #
@@ -486,6 +502,33 @@ def _panel_hint(p) -> str:
         "double-click to reset.</p>")
 
 
+def _ahead_section(p) -> str:
+    """The Look-ahead: what happens next, first in the rail.
+
+    The list is filled by report.js from the chosen view, which the server has
+    already built and escaped (see lookahead.py). The horizon buttons only pick
+    a view. The note says what the forecast assumes, in the words an analyst
+    would need before quoting a time from it.
+    """
+    from .lookahead import DEFAULT_HORIZON, HORIZONS
+    pid = p["id"]
+    choices = [("0", "Off")] + [(str(h), f"{h} d") for h in HORIZONS]
+    active = ' class="active"'
+    buttons = "".join(
+        f'<button type="button" data-h="{h}"{active if h == str(DEFAULT_HORIZON) else ""}>'
+        f"{label}</button>" for h, label in choices)
+    return f"""
+      <div class="ahead">
+        <h2>Look-ahead
+          <span class="horizon" role="group" aria-label="Look-ahead horizon">{buttons}</span></h2>
+        <ol class="aheadlist" id="ahead-{pid}" aria-live="polite"></ol>
+        <p class="hint">Straight-line forecast from each track's current drift, after
+        any rate change the data shows. Bands: 95% from the fit's scatter plus a
+        ±1 s/day model allowance, not manoeuvres yet to come. Along-track timing
+        only, not a conjunction assessment.</p>
+      </div>"""
+
+
 def _manual_inputs(pid) -> str:
     """The six state-vector components, in kilometres and km/s."""
     fields = [("x", "x", "km"), ("y", "y", "km"), ("z", "z", "km"),
@@ -577,6 +620,7 @@ def _panel_section(p, active) -> str:
   <div class="stripe"></div>
   <main>
     <aside class="rail">
+      {_ahead_section(p)}
       {_mode_segment(p)}
       <div>
         <h2>Reference &mdash; re-anchor the waterfall</h2>

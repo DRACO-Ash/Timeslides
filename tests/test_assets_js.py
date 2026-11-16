@@ -561,3 +561,30 @@ def test_a_request_to_this_service_s_api_is_sent():
     ctx.eval(FETCH_STUB)
     assert _settle(ctx, 'api("/api/groups")') == {"ok": {"fine": 1}}
     assert _call(ctx, "__fetched") == ["/api/groups"]
+
+
+# --------------------------------------------------------------------------- #
+#  report.js: the Look-ahead chooses a server-built view
+# --------------------------------------------------------------------------- #
+def test_without_a_look_ahead_in_the_payload_nothing_is_chosen():
+    ctx = _context("report.js", {"report-data": REPORT_DATA})
+    ctx.eval("GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref] = {};")
+    assert _call(ctx, "aheadHorizon(GROUPS[0])") is None
+    assert _call(ctx, "aheadView(GROUPS[0])") is None
+
+
+def test_the_server_s_default_horizon_applies_until_one_is_chosen():
+    ctx = _context("report.js", {"report-data": REPORT_DATA})
+    ctx.eval("GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref] = {ahead:"
+             " {default: '7', views: {'3': {items: 'three'}, '7': {items: 'seven'}}}};")
+    assert _call(ctx, "aheadHorizon(GROUPS[0])") == "7"
+    assert _call(ctx, "aheadView(GROUPS[0]).items") == "seven"
+    ctx.eval("ST[0].horizon = '3';")
+    assert _call(ctx, "aheadView(GROUPS[0]).items") == "three"
+
+
+def test_a_card_says_what_its_drift_was_before_a_rate_change(report_js):
+    assert _call(report_js, "driftNote({})") == ""
+    got = _call(report_js, 'driftNote({driftNote: "since rate change · was +18.0"})')
+    assert got == '<br><span class="driftnote">since rate change · was +18.0</span>'
+    assert "&lt;b&gt;" in _call(report_js, 'driftNote({driftNote: "<b>"})')

@@ -27,14 +27,13 @@ pytestmark = pytest.mark.browser
 
 # The container ships a pinned Chromium that may not match the Playwright
 # package's expected build number, and PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is set,
-# so the executable is named explicitly rather than resolved by version.
-CHROMIUM = next(
-    (p for p in (
-        Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome"),
-        Path("/opt/pw-browsers/chromium/chrome-linux/chrome"),
-    ) if p.exists()),
-    None,
-)
+# so the executable is found on disk rather than resolved by version. Found by
+# pattern, newest build first: a path naming one build number (1194) went stale
+# when the container moved to 1243, and the suite quietly skipped.
+CHROMIUM = next(iter(sorted(
+    (p for pattern in ("chromium-*/chrome-linux*/chrome", "chromium/chrome-linux*/chrome")
+     for p in Path("/opt/pw-browsers").glob(pattern) if p.is_file()),
+    reverse=True)), None)
 
 
 def _free_port() -> int:
@@ -1458,3 +1457,95 @@ def test_a_pasted_element_set_lands_on_the_same_set_in_the_series(page, live_ser
 def _iso_seconds(text):
     import datetime as dt
     return dt.datetime.fromisoformat(text).timestamp()
+
+
+# --------------------------------------------------------------------------- #
+#  The Look-ahead
+# --------------------------------------------------------------------------- #
+_AHEAD = """gd => ({
+    lines: gd.data.filter(t => String(t.uid).startsWith("ahead-line-"))
+                  .map(t => ({uid: t.uid, last: t.y[t.y.length - 1],
+                              visible: t.visible === undefined ? true : t.visible})),
+    all: gd.data.filter(t => String(t.uid).startsWith("ahead-")).length,
+    manual: gd.data.filter(t => String(t.uid).startsWith("manual-")).length,
+    shapes: (gd.layout.shapes || []).length,
+})"""
+
+
+def _days_after(iso_a, iso_b):
+    import datetime as dt
+    return (dt.datetime.fromisoformat(iso_a) - dt.datetime.fromisoformat(iso_b)).total_seconds() / 86400
+
+
+def test_the_look_ahead_forecasts_switches_horizon_and_follows_the_controls(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    panel = frame.locator(".panel.active")
+    plot = panel.locator(".js-plotly-plot")
+    plot.wait_for(timeout=60_000)
+
+    # Default: seven days, the demo's quiet week stated, one forecast per moving object.
+    assert "active" in panel.locator('.horizon button[data-h="7"]').get_attribute("class")
+    assert "Nothing passes and no rate changes" in panel.locator(".aheadlist").inner_text()
+    now = frame.locator("body").evaluate(
+        "() => GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref].ahead.views['7']"
+        ".annotations[0].y")
+    state = plot.evaluate(_AHEAD)
+    assert len(state["lines"]) == 2 and state["shapes"] == 2
+    assert all(_days_after(line["last"], now) == pytest.approx(7) for line in state["lines"])
+
+    # Fourteen days, then off, then back: nothing duplicated, nothing left behind.
+    panel.locator('.horizon button[data-h="14"]').click()
+    state = plot.evaluate(_AHEAD)
+    assert all(_days_after(line["last"], now) == pytest.approx(14) for line in state["lines"])
+    panel.locator('.horizon button[data-h="0"]').click()
+    assert plot.evaluate(_AHEAD)["all"] == 0 and plot.evaluate(_AHEAD)["shapes"] == 0
+    assert "Off." in panel.locator(".aheadlist").inner_text()
+    panel.locator('.horizon button[data-h="7"]').click()
+    seven = plot.evaluate(_AHEAD)
+    assert len(seven["lines"]) == 2
+
+    # Isolating an object takes its forecast with it.
+    panel.locator(".cards .card").nth(1).click()
+    hidden = [line for line in plot.evaluate(_AHEAD)["lines"] if line["visible"] is False]
+    assert len(hidden) == 1
+    panel.locator(".cards .card").nth(1).click()
+
+    # A new reference redraws once, at the chosen horizon.
+    panel.locator('.horizon button[data-h="3"]').click()
+    select = panel.locator(".refsel")
+    current = select.input_value()
+    select.select_option(next(o for o in select.locator("option").evaluate_all(
+        "os => os.map(o => o.value)") if o != current))
+    state = plot.evaluate(_AHEAD)
+    assert all(_days_after(line["last"], now) == pytest.approx(3) for line in state["lines"])
+    assert "active" in panel.locator('.horizon button[data-h="3"]').get_attribute("class")
+    _assert_clean(page)
+
+
+def test_after_a_burn_the_report_tells_the_truth_about_what_comes_next(page, tmp_path):
+    """The proposal's scenario, rendered by the real builder and opened as a
+    downloaded report would be. Before this change the CHASER card read +45
+    s/day and the relative-motion row put its pass at about two days."""
+    from tests.test_lookahead import scenario_report
+    path = tmp_path / "scenario.html"
+    path.write_text(scenario_report())
+    page.goto(path.as_uri(), wait_until="load")
+    panel = page.locator(".panel.active")
+    panel.locator(".js-plotly-plot").wait_for(timeout=60_000)
+    page.wait_for_function("() => document.querySelector('.aheadlist').children.length > 0")
+    events = panel.locator(".aheadlist").inner_text()
+    assert "RATE CHANGE" in events and "probable manoeuvre" in events
+    assert "in 1.2 d" in events and "CHASER passes TARGET" in events
+    chaser = panel.locator('.card', has_text="CHASER").inner_text()
+    assert "since rate change" in chaser
+    rows = panel.locator(".rel").all_inner_texts()
+    target_chaser = next(r for r in rows if "TARGET" in r and "CHASER" in r)
+    assert "~1 d to align" in target_chaser
+    rings = page.evaluate("() => document.querySelector('.js-plotly-plot').data"
+                          ".find(t => t.uid === 'ahead-passes').x.length")
+    assert rings == 2
+    _assert_clean(page)

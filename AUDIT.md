@@ -196,6 +196,38 @@ Two things are separated because they matter differently:
   the object, and a data-quality band in the report panel. A clean feed renders
   no band at all, so the band stays a finding rather than becoming furniture.
 
+## Look-ahead: what the forecast assumes
+
+The waterfall continues past the end of the window as a forecast, and the
+report lists what happens next, first in the rail. Computed server-side in
+`timeslides/report/lookahead.py` at render time, so it works in a downloaded
+copy; the browser only chooses a horizon (off, 3, 7 or 14 days; 7 by default)
+and draws the view the server built.
+
+● **FACT.** It replaced a defect. Each card's drift was one straight-line fit
+  across the whole window, so a manoeuvre was averaged into a rate the object
+  never flew, and the relative-motion rows, which read it, mistimed passes. In
+  the regression scenario in `tests/test_lookahead.py` a chaser flying about
+  87 s/day after a burn read +45, and its pass was put at about 2 days instead
+  of 1.2. A track that changed rate now shows the rate since, and what it was.
+● **FACT.** A rate change is reported only when one line against two lines
+  joined at a single break gains more than 10 on BIC, **and** the rate moves
+  by at least 2 s/day. Without the second condition the prototype reported a
+  0.1 s/day "change" on clean data. The demo raises none, in any group, mode or
+  reference, and a test holds it there.
+● **FACT.** One change per track per window. Two burns in a week report the
+  larger. If the reference itself changes rate, every other track shows it.
+● **FACT.** The bands combine the fit's 95% prediction interval with a model
+  allowance of ±1 s/day on every drift (`RATE_ALLOWANCE`). The allowance is a
+  stated assumption standing in for drag and model error.
+● **INFERENCE.** ±1 s/day should be set by an analyst against real tenant
+  data. Too small reads as a promise; too large hides real passes in noise.
+● **FACT.** The plot says "rate change", which is what the data shows.
+  "Probable manoeuvre" appears only in the rail's explanatory line, so a
+  screenshot in a briefing does not assert intent.
+● **FACT.** Along-track timing only, as everywhere in this application. A pass
+  is not a conjunction: radial and cross-track separation are not modelled.
+
 ## Choosing what a render covers
 
 Every saved group used to be rendered on every run. Once there is more than a
