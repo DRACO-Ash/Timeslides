@@ -284,7 +284,7 @@ function drawAhead(g){
   const old = (gd.data || []).map((t, i) => String(t.uid).startsWith("ahead-") ? i : -1)
     .filter(i => i >= 0);
   if(old.length) Plotly.deleteTraces(g.divId, old);
-  if(v && v.traces.length) Plotly.addTraces(g.divId, v.traces);
+  if(v?.traces.length) Plotly.addTraces(g.divId, v.traces);
   Plotly.relayout(g.divId, {shapes: v ? v.shapes : [], annotations: v ? v.annotations : []});
   aheadVisibility(g);
 }

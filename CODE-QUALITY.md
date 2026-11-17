@@ -44,7 +44,7 @@ because the first version flagged its own explanatory comment.
 
 | Finding | Rule | Enforced by |
 |---|---|---|
-| "Prefer using an optional chain expression" (twice) | `x && x.y` is `x?.y` | eslint local rule, `find_redundant_guards` |
+| "Prefer using an optional chain expression" (three times; 1.9.0 was `v && v.traces.length`) | `x && x.y` is `x?.y`, at any depth of the access chain | eslint local rule, `find_redundant_guards` |
 | "Handle this exception or don't catch it at all" | no empty catch, no unread catch binding | `no-empty`, `no-unused-vars`, `find_empty_catches`, `find_unread_catch_bindings` |
 | "The empty object is useless" | no empty literal spread or merged | `prefer-object-spread`, `find_object_assign` |
 | Bare `parseInt` | use the `Number` namespace | `no-restricted-globals`, `find_bare_number_globals` |
@@ -144,6 +144,20 @@ step is not verified until it has been run, and `|| true` on a chain rather
 than on one command is how a failure becomes a green build.
 
 ## The rule about the rules
+
+**A stripper that loses its place blinds every check that uses it, silently.**
+1.9.0's `v && v.traces.length` reached the gate past two local checks. The
+eslint rule compared the guard only with the outermost object (`v.traces`),
+so a guard two links down passed. The Python check would have caught it, but
+never saw the line: `_strip_js_comments` had no notion of a regex literal, so
+the quotes inside `/[&<>"']/g` on line 29 of `report.js` opened a "string", and
+167 lines after it were blanked. `picker.js` had the same regex. Every
+JavaScript detector was blind to those lines, and nothing failed, because
+nothing in a blind region is expected to fire. Fixing it surfaced two more
+detector defects that the blanking had hidden: the comparison-guard exemption
+had never worked, and code inside `${...}` was treated as string text. Each
+real asset now has a known offender appended to its end in a test, which
+fails if anything earlier leaves the stripper out of step.
 
 **A check that reads a file whole will match the comment explaining the check.**
 This has now happened three times: the `!important` rule flagged its own

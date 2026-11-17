@@ -58,7 +58,7 @@ storage, `SEC` security, `TEST` testing and verification, `DATA` correctness,
 
 # Part 1: the meta-rules
 
-These 12 generated most of Part 2. They are ordered by how much they would have
+These 13 generated most of Part 2. They are ordered by how much they would have
 saved.
 
 ### META-01 An unresolvable artefact reads as zero, not as "no data"
@@ -177,6 +177,20 @@ configuration nobody can see.
 **Rule.** Put the word hypothesis in the code, with the cost of being wrong
 stated, so nobody later reads a guess as something that was verified. Mark fact,
 inference and speculation separately in any record.
+
+### META-13 A detector tested on samples can still be blind to the real file
+
+`find_redundant_guards` had its offender and lookalike tests (META-05), all
+green, and still missed a finding in `report.js`. The shared comment stripper
+mis-read a regex literal containing quote characters, lost its place, and
+blanked 167 lines. Nothing failed, because nothing in a blind region is ever
+expected to fire.
+
+**Rule.** Feed every detector the real files with a known offender appended at
+the end, and assert it is found. That proves the whole file was seen, which
+sample-string tests cannot. Whatever strips comments and strings for the
+detectors must understand every literal form in the language: regex literals,
+and code inside template interpolations, as well as quotes.
 
 # Part 2: the register
 

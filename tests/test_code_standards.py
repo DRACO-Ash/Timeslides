@@ -48,6 +48,88 @@ def _py_files():
     return sorted(PACKAGE.rglob("*.py"))
 
 
+# A `/` begins a regex literal, not a division, when what precedes it cannot
+# end an expression. Without this the escaping regex /[&<>"']/g opened a
+# "string" at its double quote, the quotes after it paired up wrongly, and 167
+# lines of report.js were blanked. Every JavaScript check here was blind to
+# them, and 1.9.0's `v && v.traces.length` reached the gate through that gap.
+_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%<>~^")
+_REGEX_KEYWORDS = ("return", "typeof", "case", "do", "else", "in", "of",
+                   "void", "yield", "await", "delete", "throw", "new")
+
+
+def _regex_may_start(text: str, i: int) -> bool:
+    if text[i + 1:i + 2] in ("/", "*"):
+        return False
+    k = i - 1
+    while k >= 0 and text[k] in " \t\r\n":
+        k -= 1
+    if k < 0 or text[k] in _REGEX_PRECEDERS:
+        return True
+    word = re.search(r"[A-Za-z_$][\w$]*$", text[:k + 1])
+    return bool(word) and word.group(0) in _REGEX_KEYWORDS
+
+
+def _regex_end(text: str, i: int) -> int:
+    """Index just past the closing slash, honouring escapes and [classes]."""
+    j, in_class, n = i + 1, False, len(text)
+    while j < n and text[j] != "\n":
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            return j + 1
+        j += 1
+    return j
+
+
+def _template_end(text: str, i: int) -> int:
+    """Index just past a template literal's closing backtick."""
+    j, depth, n = i + 1, 0, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if depth == 0 and c == "`":
+            return j + 1
+        if depth == 0 and text[j:j + 2] == "${":
+            depth, j = 1, j + 2
+            continue
+        if depth and c == "{":
+            depth += 1
+        elif depth and c == "}":
+            depth -= 1
+        j += 1
+    return n
+
+
+def _blank_template(chunk: str) -> str:
+    """Blank a template's literal text but keep its ${...} code, which is code:
+    `${err.message}` reads err, and a detector that cannot see it reports an
+    unread binding that is read."""
+    out, depth = [], 0
+    k = 0
+    while k < len(chunk):
+        c = chunk[k]
+        if depth == 0 and chunk[k:k + 2] == "${":
+            out.append("${")
+            depth, k = 1, k + 2
+            continue
+        if depth:
+            depth += {"{": 1, "}": -1}.get(c, 0)
+            out.append(c)
+        else:
+            out.append(c if c in "`\n" else " ")
+        k += 1
+    return "".join(out)
+
+
 def _strip_js_comments(text: str) -> str:
     """Blank out comments and string bodies so a pattern in prose is not a hit.
 
@@ -67,7 +149,15 @@ def _strip_js_comments(text: str) -> str:
             end = n if end == -1 else end
             out.append(" " * (end - i))
             i = end
-        elif text[i] in "\"'`":
+        elif text[i] == "/" and _regex_may_start(text, i):
+            j = _regex_end(text, i)
+            out.append("/" + re.sub(r"[^\n]", " ", text[i + 1:j - 1]) + "/")
+            i = j
+        elif text[i] == "`":
+            j = _template_end(text, i)
+            out.append(_blank_template(text[i:j]))
+            i = j
+        elif text[i] in "\"'":
             quote, j = text[i], i + 1
             while j < n and text[j] != quote:
                 j += 2 if text[j] == "\\" else 1
@@ -98,7 +188,12 @@ def _hits(pattern, text, flags=0):
 # --------------------------------------------------------------------------- #
 def find_redundant_guards(text: str) -> list:
     out = []
-    for line, hit in _hits(r"\b([A-Za-z_$][\w$]*) && \1[.\[]", text):
+    # `x && x.y !== z` is a guard, not a redundant chain (see the test's
+    # docstring), so an access ending in a comparison is not a hit. This was
+    # always the intent; until the stripper could see past report.js line 29,
+    # nothing had ever tested it against the one real case.
+    pattern = r"\b([A-Za-z_$][\w$]*) && \1[.\[][\w$.\[\]'\"]*(?![\w$.\[\]'\"])(?!\s*(?:[!=]==?|[<>]=?))"
+    for line, hit in _hits(pattern, text):
         out.append((line, hit.strip()))
     return out
 
@@ -510,6 +605,42 @@ def test_the_optional_chain_detector_leaves_a_genuine_guard_alone():
     assert find_redundant_guards("if (g && window.Plotly) resize();") == []
     assert find_redundant_guards("if (a && b.c) go();") == []
     assert find_redundant_guards("const n = count && total;") == []
+    assert find_redundant_guards("if(sel && sel.value !== st.ref) x();") == []
+    assert find_redundant_guards("if (x && x.y.z < 3) go();") == []
+
+
+def test_the_optional_chain_detector_follows_the_whole_access_chain():
+    """1.9.0's gate finding. The guard is `v`, the access two links down."""
+    assert find_redundant_guards("if(v && v.traces.length) go();")
+    assert find_redundant_guards("x && x.y.z();")
+
+
+def test_a_regex_literal_does_not_swallow_the_code_after_it():
+    """The escaping regex /[&<>"']/g holds both quote characters. Read as
+    strings, they blanked 167 lines of report.js and every check here was blind
+    to them; 1.9.0's finding sat in that gap and reached the gate."""
+    text = 'x.replace(/[&<>"\']/g, f);\nif(v && v.traces.length) go();\n'
+    assert find_redundant_guards(text) == [(2, "v && v.traces.length")]
+    assert find_redundant_guards("const r = a / b; c = d / e;\nif(v && v.w) go();") \
+        == [(2, "v && v.w")]
+
+
+def test_code_inside_a_template_interpolation_is_still_code():
+    assert find_unread_catch_bindings(
+        "try { a(); } catch (err) { show(`failed: ${err.message}`); }") == []
+    assert find_unread_catch_bindings(
+        "try { a(); } catch (err) { show(`failed: err`); }") == [(1, "err")]
+
+
+@pytest.mark.parametrize("name", ["picker.js", "report.js"])
+def test_no_asset_hides_its_last_line_from_the_detectors(name):
+    """The blind spot was invisible because nothing in it was ever expected to
+    fire. Append a known offender to each real asset: if anything before it
+    leaves the stripper inside a string, regex or comment, this finds nothing."""
+    path = next(p for p in _js_files() if p.name == name)
+    text = path.read_text(encoding="utf-8") + "\nif(probe && probe.value) go();\n"
+    assert find_redundant_guards(text)[-1:] == [
+        (text.count("\n"), "probe && probe.value")]
 
 
 def test_the_optional_chain_detector_ignores_comments_and_strings():

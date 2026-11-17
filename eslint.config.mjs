@@ -82,12 +82,17 @@ const local = {
             if (node.operator !== "&&") return;
             const right = node.right;
             if (right.type !== "MemberExpression" && right.type !== "CallExpression") return;
-            const target = right.type === "CallExpression" ? right.callee : right.object;
-            if (!target) return;
-            const base = right.type === "CallExpression"
-              ? (target.type === "MemberExpression" ? target.object : target)
-              : target;
-            if (!sameSource(node.left, base)) return;
+            /* Walk the whole access chain, not just its last link. 1.9.0's
+             * finding was `v && v.traces.length`: the guard matches
+             * `v.traces`'s object, two links down, and comparing only the
+             * outermost object (`v.traces`) let it through to the gate. */
+            let link = right;
+            let found = false;
+            while (link && (link.type === "MemberExpression" || link.type === "CallExpression")) {
+              link = link.type === "CallExpression" ? link.callee : link.object;
+              if (link && sameSource(node.left, link)) { found = true; break; }
+            }
+            if (!found) return;
             context.report({
               node,
               message: "Use an optional chain (x?.y) rather than x && x.y.",
