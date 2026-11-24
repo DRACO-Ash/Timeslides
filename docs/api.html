@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timeslides API Reference</title>
+<style>
+:root{
+  --navy:#162646; --blue1:#385FAF; --blue2:#739BCF; --amber:#C67C00; --green:#27AE60;
+  --red:#B03A2E; --purple:#6C4FA3; --body:#2C3E50; --muted:#5D6D7E; --line:#D5DCE6; --panel:#F4F7FB;
+  --bg:#FFFFFF; --code:#0F1B33; --codetext:#E6EDF7;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0; background:var(--bg); color:var(--body);
+  font-family:"Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif; font-size:15px; line-height:1.55}
+header.top{background:var(--navy); color:#fff; padding:28px 16px 24px}
+.wrap{max-width:1120px; margin:0 auto; padding:0 16px}
+header.top .wrap{padding:0}
+.brand{font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--blue2); font-weight:600}
+h1{margin:6px 0 6px; font-size:30px; font-weight:600}
+.sub{color:#C9D6EA; margin:0; max-width:840px}
+.facts{display:flex; flex-wrap:wrap; gap:8px; margin-top:16px}
+.chip{background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:4px 12px; font-size:12.5px; color:#E3EAF5}
+.chip b{color:#fff; font-weight:600}
+nav.toc{position:sticky; top:0; z-index:5; background:#fff; border-bottom:1px solid var(--line)}
+nav.toc .wrap{display:flex; gap:4px; overflow-x:auto; padding-top:8px; padding-bottom:8px}
+nav.toc a{white-space:nowrap; text-decoration:none; color:var(--blue1); font-size:13.5px; font-weight:600; padding:6px 10px; border-radius:6px}
+nav.toc a:hover{background:var(--panel)}
+main .wrap{padding-top:8px; padding-bottom:48px}
+h2{color:var(--navy); font-size:22px; margin:40px 0 8px; padding-left:12px; border-left:4px solid var(--blue1)}
+p{margin:8px 0}
+.lede{color:var(--muted); margin-top:0}
+ul.dots{list-style:none; padding-left:0; margin:8px 0}
+ul.dots li{position:relative; padding-left:20px; margin:4px 0}
+ul.dots li::before{content:"●"; position:absolute; left:0; top:0; color:var(--blue1); font-size:11px; line-height:22px}
+code{font-family:Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, monospace; font-size:13px}
+p code, li code, td code{background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--navy)}
+pre{background:var(--code); color:var(--codetext); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:10px 0}
+pre code{background:none; border:0; padding:0; color:inherit}
+.tablewrap{overflow-x:auto; margin:12px 0}
+table{border-collapse:collapse; width:100%; font-size:14px}
+th{background:var(--navy); color:#fff; text-align:left; font-weight:600; padding:9px 12px; white-space:nowrap}
+td{padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+tr:nth-child(even) td{background:#FAFBFD}
+td a{color:var(--blue1); text-decoration:none; font-weight:600}
+.m{display:inline-block; min-width:62px; text-align:center; border-radius:5px; padding:2px 8px; font-size:12px; font-weight:700; letter-spacing:.04em; color:#fff}
+.GET{background:var(--blue1)} .POST{background:var(--green)} .PUT{background:var(--purple)} .DELETE{background:var(--red)}
+.tag{display:inline-block; border-radius:999px; padding:1px 9px; font-size:11.5px; font-weight:600; margin-right:4px}
+.local{background:#E8F1FB; color:var(--blue1)}
+.udl{background:#FDF1DE; color:#8A5600}
+.writes{background:#EAF7EF; color:#1C7C45}
+.ep{border:1px solid var(--line); border-radius:10px; margin:16px 0; overflow:hidden}
+.ephead{display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--line)}
+.ephead .path{font-family:Consolas, Menlo, monospace; font-size:15px; font-weight:600; color:var(--navy)}
+.ephead .tags{margin-left:auto}
+.epbody{padding:6px 16px 14px}
+.label{font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:700; margin:14px 0 4px}
+.note{border-left:4px solid var(--blue2); background:var(--panel); padding:10px 14px; border-radius:0 8px 8px 0; margin:12px 0}
+.warn{border-left-color:var(--amber); background:#FFF8EC}
+.mark{font-size:11px; font-weight:700; letter-spacing:.08em; border-radius:4px; padding:1px 6px; margin-right:6px}
+.FACT{background:#E3F4EA; color:#1C7C45} .INFERENCE{background:#E8F1FB; color:var(--blue1)}
+footer{background:var(--navy); color:#C9D6EA; font-size:12.5px; padding:18px 16px}
+footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:0}
+@media (max-width:640px){ h1{font-size:24px} .ephead .tags{margin-left:0} }
+@media print{ nav.toc{display:none} .ep{break-inside:avoid} pre{white-space:pre-wrap} }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">Bluestaq Limited · Space Domain Awareness</div>
+    <h1>Timeslides API Reference</h1>
+    <p class="sub">Every HTTP route the Timeslides application serves: along-track phase offset for LEO objects, from UDL state vectors and element sets. What each route does, what it accepts, what it returns, and whether it reaches the UDL.</p>
+    <div class="facts">
+      <span class="chip">Version <b>1.9.1</b></span>
+      <span class="chip">Commit <b>d8e1972</b></span>
+      <span class="chip">Routes <b>15</b></span>
+      <span class="chip">Port <b>8080</b></span>
+      <span class="chip">Compiled <b>24 Nov 2026</b></span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <div class="wrap">
+    <a href="#summary">Summary</a>
+    <a href="#conventions">Conventions</a>
+    <a href="#ui">Interface and health</a>
+    <a href="#groups">Groups</a>
+    <a href="#catalogue">Catalogue and sources</a>
+    <a href="#runs">Runs and reports</a>
+    <a href="#manual">Manual state</a>
+    <a href="#udl">Outbound UDL calls</a>
+    <a href="#config">Configuration</a>
+  </div>
+</nav>
+
+<main>
+<div class="wrap">
+
+<h2 id="summary">Summary</h2>
+<p class="lede">All routes are defined in <code>timeslides/api.py</code> (<code>create_app</code>). Replace <code>https://&lt;timeslides-host&gt;</code> with the deployed App Store address. Tags: <span class="tag local">Local</span> never calls the UDL, <span class="tag udl">UDL</span> may call it, <span class="tag writes">Writes</span> changes stored state.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Touches</th></tr></thead>
+<tbody>
+<tr><td><span class="m GET">GET</span></td><td><a href="#index"><code>/</code></a></td><td>The application page, and the platform's readiness target</td><td>Local</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#healthz"><code>/healthz</code></a></td><td>Health, demo flag and storage state</td><td>Local</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#groups-list"><code>/api/groups</code></a></td><td>List object groups</td><td>Local</td></tr>
+<tr><td><span class="m POST">POST</span></td><td><a href="#groups-create"><code>/api/groups</code></a></td><td>Create a group</td><td>Writes</td></tr>
+<tr><td><span class="m PUT">PUT</span></td><td><a href="#groups-update"><code>/api/groups/{group_id}</code></a></td><td>Replace a group</td><td>Writes</td></tr>
+<tr><td><span class="m DELETE">DELETE</span></td><td><a href="#groups-archive"><code>/api/groups/{group_id}</code></a></td><td>Archive a group (kept, hidden)</td><td>Writes</td></tr>
+<tr><td><span class="m POST">POST</span></td><td><a href="#groups-restore"><code>/api/groups/{group_id}/restore</code></a></td><td>Bring an archived group back</td><td>Writes</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#catalogue-search"><code>/api/catalogue</code></a></td><td>Search the UDL on-orbit catalogue for the picker</td><td>UDL</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#sources-list"><code>/api/sources</code></a></td><td>The data sources that can be plotted, and their markers</td><td>Local</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#sources-probe"><code>/api/sources/probe</code></a></td><td>Ask the UDL which providers answer for an object</td><td>UDL</td></tr>
+<tr><td><span class="m POST">POST</span></td><td><a href="#runs-start"><code>/api/runs</code></a></td><td>Queue a waterfall render</td><td>UDL, Writes</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#runs-list"><code>/api/runs</code></a></td><td>List recent renders</td><td>Local</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#runs-get"><code>/api/runs/{run_id}</code></a></td><td>Status and progress of one render</td><td>Local</td></tr>
+<tr><td><span class="m GET">GET</span></td><td><a href="#runs-report"><code>/api/runs/{run_id}/report</code></a></td><td>The finished HTML report</td><td>Local</td></tr>
+<tr><td><span class="m POST">POST</span></td><td><a href="#manual-state"><code>/api/manual-state</code></a></td><td>Place a hand-entered state vector or element set on a report</td><td>Local</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="conventions">Conventions</h2>
+<ul class="dots">
+  <li><b>Errors</b> share one shape, <code>{"error": "&lt;Type&gt;", "detail": "&lt;sentence&gt;"}</code>: <code>400</code> ValidationError, <code>404</code> NotFoundError, <code>409</code> ConflictError, <code>422</code> ComputeError, <code>500</code> ConfigError, <code>502</code> UpstreamError (the UDL refused, rate limited or failed). A malformed body is refused by the framework with <code>422</code> before any code runs.</li>
+  <li><b>Authentication:</b> the application performs none of its own and holds no user accounts. <span class="mark FACT">FACT</span>No route checks a token. <span class="mark INFERENCE">INFERENCE</span>Access is controlled by the App Store's sign-in front door, which passes <code>X-Auth-Request-Email</code>; the app records that address in its request log line and nothing more.</li>
+  <li><b>UDL credentials</b> come only from <code>UDL_USER</code> and <code>UDL_PASS</code> in the environment. Callers of this API never supply or see them.</li>
+  <li><b>Inbound rate limits:</b> none. Outbound UDL calls are paced by a token bucket, 60 per minute by default (<code>UDL_RATE_PER_MIN</code>).</li>
+  <li><b>Demo mode</b> (<code>TIMESLIDES_DEMO=1</code>, or a DAST scan with no credentials) answers every UDL-backed route with synthetic data and sets <code>"demo": true</code>.</li>
+  <li><b>Documentation routes are off:</b> <code>/docs</code>, <code>/redoc</code> and <code>/openapi.json</code> return <code>404</code>. This page is the reference.</li>
+  <li><b>Data modes:</b> <code>REAL</code>, <code>SIM</code> (sent to the UDL as <code>SIMULATED</code>), <code>TEST</code>, <code>EXERCISE</code>.</li>
+  <li><b>Logging:</b> one JSON line per request on stdout, in the App Store logging standard. Query strings, cookies and the <code>Authorization</code> header are never logged.</li>
+</ul>
+
+<h2 id="ui">Interface and health</h2>
+
+<div class="ep" id="index">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>The application page: the group picker, render controls and report viewer. It is also the platform's readiness probe target, so it is built from local assets and never calls the UDL. A UDL outage therefore cannot put the pod into a restart loop. The page carries the configured classification banner and warns if storage has fallen back to memory.</p>
+  </div>
+</div>
+
+<div class="ep" id="healthz">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/healthz</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>Always <code>200</code> while the server runs, even when the volume cannot be written, because the pod can still render reports. The storage block says how the volume was probed at boot.</p>
+<pre><code>{"status": "ok", "demo": false,
+ "storage": {"writable": true, "mode": "volume" | "memory", "strategy": "...",
+             "detail": "...", "path": "/data/groups.json"}}</code></pre>
+  </div>
+</div>
+
+<h2 id="groups">Groups</h2>
+<p class="lede">A group is a named set of objects with one reference object, which is the datum every phase offset is measured from. The store is one versioned document: each change increments <code>rev</code>. Pass the <code>rev</code> you last read on writes, and if someone else changed the document since then you get <code>409</code> instead of overwriting their work. Omit it to write regardless.</p>
+
+<div class="ep" id="groups-list">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/groups</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <div class="label">Query parameters</div>
+    <p><code>includeArchived</code> (default <code>false</code>): include archived groups.</p>
+    <div class="label">Response</div>
+<pre><code>{"rev": 7,
+ "groups": [{"id": "uuid", "name": "Proximity operations", "sats": [62902, 62903, 62904],
+             "reference": 62902, "archived": false, "created": "...", "updated": "..."}]}</code></pre>
+  </div>
+</div>
+
+<div class="ep" id="groups-create">
+  <div class="ephead"><span class="m POST">POST</span><span class="path">/api/groups</span><span class="tags"><span class="tag writes">Writes</span></span></div>
+  <div class="epbody">
+    <div class="label">Body (JSON)</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td><code>name</code></td><td>Required. Up to 80 characters once cleaned</td></tr>
+        <tr><td><code>sats</code></td><td>Required. 2 to 40 NORAD catalogue numbers, each 1 to 999,999,999</td></tr>
+        <tr><td><code>reference</code></td><td>Optional. Must be one of <code>sats</code>. Defaults to the first</td></tr>
+        <tr><td><code>rev</code></td><td>Optional, ignored on create</td></tr>
+      </tbody>
+    </table></div>
+    <div class="label">Example</div>
+<pre><code>curl -s -X POST "https://&lt;timeslides-host&gt;/api/groups" -H "Content-Type: application/json" \
+  -d '{"name":"COSMOS 2581 cluster","sats":[62902,62903,62904],"reference":62902}'</code></pre>
+    <div class="label">Responses</div>
+    <p><code>201</code> with the new group record · <code>400</code> for a bad name, count or reference</p>
+  </div>
+</div>
+
+<div class="ep" id="groups-update">
+  <div class="ephead"><span class="m PUT">PUT</span><span class="path">/api/groups/{group_id}</span><span class="tags"><span class="tag writes">Writes</span></span></div>
+  <div class="epbody">
+    <p>Replaces the group's name, objects and reference. Its <code>created</code> time and archived state are kept. Body as for create, with <code>rev</code> for the conflict check.</p>
+    <div class="label">Responses</div>
+    <p><code>200</code> with the updated record · <code>400</code> invalid · <code>404</code> no such group · <code>409</code> the document changed since your <code>rev</code></p>
+  </div>
+</div>
+
+<div class="ep" id="groups-archive">
+  <div class="ephead"><span class="m DELETE">DELETE</span><span class="path">/api/groups/{group_id}</span><span class="tags"><span class="tag writes">Writes</span></span></div>
+  <div class="epbody">
+    <p>Archives the group rather than deleting it: it disappears from lists and renders and can be restored. Nothing is ever hard-deleted through the API.</p>
+    <div class="label">Query parameters</div>
+    <p><code>rev</code> (optional): the conflict check.</p>
+    <div class="label">Responses</div>
+    <p><code>200</code> with the archived record · <code>404</code> · <code>409</code></p>
+  </div>
+</div>
+
+<div class="ep" id="groups-restore">
+  <div class="ephead"><span class="m POST">POST</span><span class="path">/api/groups/{group_id}/restore</span><span class="tags"><span class="tag writes">Writes</span></span></div>
+  <div class="epbody">
+    <p>Un-archives a group. Query parameter <code>rev</code> as above.</p>
+    <div class="label">Responses</div>
+    <p><code>200</code> with the restored record · <code>404</code> · <code>409</code></p>
+  </div>
+</div>
+
+<h2 id="catalogue">Catalogue and sources</h2>
+
+<div class="ep" id="catalogue-search">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/catalogue</span><span class="tags"><span class="tag udl">UDL</span></span></div>
+  <div class="epbody">
+    <p>Searches the UDL on-orbit catalogue for the object picker. A number is looked up as a NORAD catalogue number. Anything else is a name search; if the tenant does not support the name filter, a bounded page is filtered locally rather than returning nothing.</p>
+    <div class="label">Query parameters</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Name</th><th>Default</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>q</code></td><td>empty</td><td>Up to 120 characters. Empty returns no results</td></tr>
+        <tr><td><code>limit</code></td><td><code>50</code></td><td>1 to 200</td></tr>
+      </tbody>
+    </table></div>
+    <div class="label">Example and response</div>
+<pre><code>curl -s "https://&lt;timeslides-host&gt;/api/catalogue?q=62902"
+
+{"results": [{"satNo": 62902, "name": "COSMOS 2581", "intlDes": "...", "country": "...",
+              "objectType": "PAYLOAD", "launchDate": "...", "decayDate": null}],
+ "demo": false}</code></pre>
+  </div>
+</div>
+
+<div class="ep" id="sources-list">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/sources</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>The sources a report can plot and how each is drawn. The server owns this list, so the interface never keeps its own copy.</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>key</th><th>UDL source</th><th>Kind</th><th>Frame</th><th>Marker</th></tr></thead>
+      <tbody>
+        <tr><td><code>leolabs</code></td><td>LeoLabs</td><td>state</td><td>J2000</td><td>circle</td></tr>
+        <tr><td><code>northstar</code></td><td>NorthStar</td><td>state</td><td>J2000</td><td>diamond</td></tr>
+        <tr><td><code>kbr</code></td><td>KBR</td><td>state</td><td>J2000</td><td>triangle</td></tr>
+        <tr><td><code>ppec</code></td><td>PPEC</td><td>state</td><td>J2000</td><td>cross</td></tr>
+        <tr><td><code>spacetrack</code></td><td>Space-Track</td><td>state</td><td>J2000</td><td>x</td></tr>
+        <tr><td><code>elset</code></td><td>any (not filtered)</td><td>elset</td><td>TEME</td><td>open square</td></tr>
+      </tbody>
+    </table></div>
+<pre><code>{"sources": [{"key": "leolabs", "label": "LeoLabs", "udlSource": "LeoLabs", "symbol": "circle",
+              "shape": "mk-circle", "frame": "J2000", "kind": "state"}, ...],
+ "stateKeys": ["leolabs", "northstar", "kbr", "ppec", "spacetrack"], "elsetKey": "elset", "demo": false}</code></pre>
+  </div>
+</div>
+
+<div class="ep" id="sources-probe">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/sources/probe</span><span class="tags"><span class="tag udl">UDL</span></span></div>
+  <div class="epbody">
+    <p>Asks the UDL, provider by provider, whether any state vectors exist for an object. Provider names are configured, not read back from the tenant, so a misspelt one silently returns nothing and never appears in a report. This route makes that visible. It makes one small request (<code>maxResults=1</code>) per provider.</p>
+    <div class="label">Query parameters</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Name</th><th>Default</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>satNo</code></td><td>the reference of the first live group</td><td>1 to 999,999,999. With no groups and no <code>satNo</code>, returns <code>400</code></td></tr>
+        <tr><td><code>days</code></td><td><code>7</code></td><td>Lookback, 1 to 90</td></tr>
+      </tbody>
+    </table></div>
+<pre><code>{"satNo": 62902, "demo": false,
+ "results": [{"key": "leolabs", "label": "LeoLabs", "udlSource": "LeoLabs",
+              "available": true, "records": 1, "error": null}, ...]}</code></pre>
+  </div>
+</div>
+
+<h2 id="runs">Runs and reports</h2>
+<p class="lede">A render never runs inside a request. <code>POST /api/runs</code> queues it and returns at once; poll the run until <code>status</code> is <code>done</code>, then fetch the report. The last 50 runs are remembered.</p>
+
+<div class="ep" id="runs-start">
+  <div class="ephead"><span class="m POST">POST</span><span class="path">/api/runs</span><span class="tags"><span class="tag udl">UDL</span><span class="tag writes">Writes</span></span></div>
+  <div class="epbody">
+    <p>Queues a phase offset waterfall render. If an identical render is already queued or running, the call joins it and returns that run with <code>"joined": true</code> rather than starting a second.</p>
+    <div class="label">Body (JSON, camelCase or snake_case)</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>groupIds</code></td><td>every live group</td><td>Up to 12 group ids. An archived group is refused with <code>400</code></td></tr>
+        <tr><td><code>days</code></td><td><code>7</code></td><td>Window length, 1 to 90, ending at <code>end</code></td></tr>
+        <tr><td><code>start</code>, <code>end</code></td><td><code>end</code> = now</td><td>ISO 8601. A naive time is read as UTC. <code>start</code> overrides <code>days</code>. The window may not exceed 90 days</td></tr>
+        <tr><td><code>modes</code></td><td><code>["REAL"]</code></td><td>Any of <code>REAL</code>, <code>SIM</code>, <code>TEST</code>, <code>EXERCISE</code></td></tr>
+        <tr><td><code>sources</code></td><td>all five state sources</td><td>Keys from <code>/api/sources</code>. Element sets are always fetched: they carry the reference orbit</td></tr>
+        <tr><td><code>invert</code></td><td><code>false</code></td><td>Flip the sign convention of the offsets</td></tr>
+      </tbody>
+    </table></div>
+    <div class="label">Example</div>
+<pre><code>curl -s -X POST "https://&lt;timeslides-host&gt;/api/runs" -H "Content-Type: application/json" \
+  -d '{"groupIds":["&lt;uuid&gt;"],"days":7,"modes":["REAL"],"sources":["leolabs","spacetrack"]}'</code></pre>
+    <div class="label">Response</div>
+<pre><code>202 {"id": "&lt;run_id&gt;", "status": "queued", "label": "COSMOS 2581 cluster",
+     "created": "...", "started": null, "finished": null, "error": null,
+     "progress": {"done": 0, "total": 0, "current": ""}, "reportUrl": null, "joined": false}</code></pre>
+    <p><code>400</code> for a bad window, mode, source or group, or no groups defined · <code>404</code> unknown group id</p>
+  </div>
+</div>
+
+<div class="ep" id="runs-list">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/runs</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>The remembered runs, each in the run shape below.</p>
+<pre><code>{"runs": [{"id": "...", "status": "done", ...}, ...]}</code></pre>
+  </div>
+</div>
+
+<div class="ep" id="runs-get">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/runs/{run_id}</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>One run's state. <code>status</code> moves through <code>queued</code>, <code>running</code>, then <code>done</code> or <code>failed</code>. <code>progress</code> counts objects fetched and names the current one. <code>reportUrl</code> is set once the run is <code>done</code>, and <code>error</code> carries the reason for a failed run.</p>
+<pre><code>{"id": "...", "status": "running", "label": "...", "created": "...", "started": "...",
+ "finished": null, "error": null, "progress": {"done": 2, "total": 3, "current": "COSMOS 2582"},
+ "reportUrl": null}</code></pre>
+    <p><code>404</code> for an unknown run id</p>
+  </div>
+</div>
+
+<div class="ep" id="runs-report">
+  <div class="ephead"><span class="m GET">GET</span><span class="path">/api/runs/{run_id}/report</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>The finished report: a self-contained HTML document with the waterfall plot, object cards, the Look-ahead forecast and pass list. It is several megabytes, streamed from the volume, or from memory if the volume refused it.</p>
+    <div class="label">Caching</div>
+    <p>Returns <code>ETag: "&lt;run_id&gt;"</code> and <code>Cache-Control: private, max-age=3600</code>. A report never changes once written, so sending the ETag back as <code>If-None-Match</code> returns <code>304</code>.</p>
+    <div class="label">Responses</div>
+    <p><code>200 text/html</code>, served inline as <code>phase_offset_&lt;id&gt;.html</code> · <code>304</code> · <code>400</code> the run is not finished yet · <code>404</code> unknown run</p>
+  </div>
+</div>
+
+<h2 id="manual">Manual state</h2>
+
+<div class="ep" id="manual-state">
+  <div class="ephead"><span class="m POST">POST</span><span class="path">/api/manual-state</span><span class="tags"><span class="tag local">Local</span></span></div>
+  <div class="epbody">
+    <p>Places one hand-entered state vector or element set against a report's reference orbit and returns where it lands. It is entirely stateless: nothing is stored, nothing is fetched from the UDL, and the report on the volume is untouched. The report draws the result as a temporary, highlighted point. The audit log records that a placement happened, not what was entered.</p>
+    <div class="label">Body (JSON)</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>kind</code></td><td><code>state</code> (default) or <code>elset</code></td></tr>
+        <tr><td><code>epoch</code></td><td>State vector epoch, ISO 8601 UTC</td></tr>
+        <tr><td><code>frame</code></td><td>State vector frame, default <code>J2000</code></td></tr>
+        <tr><td><code>x</code>, <code>y</code>, <code>z</code></td><td>Position, km (text or number)</td></tr>
+        <tr><td><code>vx</code>, <code>vy</code>, <code>vz</code></td><td>Velocity, km/s</td></tr>
+        <tr><td><code>elset</code></td><td>A pasted two- or three-line element set, up to 400 characters</td></tr>
+        <tr><td><code>label</code></td><td>Optional display name, up to 200 characters</td></tr>
+        <tr><td><code>tle</code></td><td>Required: the report reference's two TLE lines, which the report page supplies</td></tr>
+        <tr><td><code>invert</code></td><td>Match the report's sign convention</td></tr>
+      </tbody>
+    </table></div>
+    <div class="label">Response</div>
+<pre><code>{"kind": "state", "offset": -12.345, "km": -93.1, "epoch": "...", "detail": "...",
+ "label": "...", "trace": {...Plotly marker...}, "row": {...table row...}}</code></pre>
+    <p><code>400</code> with a sentence naming the bad field (an unparseable number, a bad checksum, a velocity below orbital speed)</p>
+  </div>
+</div>
+
+<h2 id="udl">Outbound UDL calls</h2>
+<p class="lede">The UDL is Timeslides' only external dependency. Requests use HTTP Basic credentials from the environment and are paced by the outbound token bucket. Timestamps are sent as <code>YYYY-MM-DDTHH:MM:SS.000000Z</code>.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>UDL endpoint</th><th>Called by</th><th>Parameters</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET /udl/statevector</code></td><td>Each render: once per object, per selected source, per data mode</td><td><code>epoch=&lt;start&gt;..&lt;end&gt;</code>, <code>satNo</code>, <code>source</code>, <code>maxResults</code> (5000), <code>dataMode</code></td></tr>
+    <tr><td><code>GET /udl/elset</code></td><td>Each render: once per object, per data mode</td><td><code>epoch=&lt;start&gt;..&lt;end&gt;</code>, <code>satNo</code>, <code>maxResults</code> (5000), <code>dataMode</code>. Not filtered by source</td></tr>
+    <tr><td><code>GET /udl/statevector</code></td><td><code>/api/sources/probe</code>: once per provider</td><td>As above with <code>maxResults=1</code></td></tr>
+    <tr><td><code>GET /udl/onorbit</code></td><td><code>/api/catalogue</code>, and object names for a render</td><td><code>satNo=&lt;n,n,...&gt;</code> for a number; <code>name=~&lt;TEXT&gt;</code> with <code>maxResults</code> for a name</td></tr>
+  </tbody>
+</table></div>
+<div class="label">Example: element sets for COSMOS 2581 (62902), default 7-day window</div>
+<pre><code>https://unifieddatalibrary.com/udl/elset?epoch=2026-11-17T00:00:00.000000Z..2026-11-24T00:00:00.000000Z&amp;satNo=62902&amp;maxResults=5000&amp;dataMode=REAL</code></pre>
+<div class="note warn"><span class="mark FACT">FACT</span>The <code>/udl/onorbit</code> field names and the provider <code>source</code> strings come from the public UDL data model, not from a call against the tenant. A provider spelt differently by the tenant returns an empty list, not an error. Use <code>/api/sources/probe</code> to check.</div>
+
+<h2 id="config">Configuration</h2>
+<p class="lede">Read once at boot from the environment. There is no configuration file. Missing credentials stop the application at boot, except in the DAST scan case.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>UDL_USER</code>, <code>UDL_PASS</code></td><td>none</td><td>UDL credentials. Required unless in demo mode</td></tr>
+    <tr><td><code>UDL_BASE</code></td><td><code>https://unifieddatalibrary.com</code></td><td>UDL base address</td></tr>
+    <tr><td><code>UDL_MAX_RESULTS</code></td><td><code>5000</code></td><td>Records per request, 1 to 20,000</td></tr>
+    <tr><td><code>UDL_RATE_PER_MIN</code></td><td><code>60</code></td><td>Outbound request pace, 1 to 600</td></tr>
+    <tr><td><code>UDL_TIMEOUT_S</code></td><td><code>60</code></td><td>Per-request timeout, 5 to 600 seconds</td></tr>
+    <tr><td><code>CLASSIFICATION</code></td><td><code>UNCLASSIFIED</code></td><td>Banner shown on the page and every report</td></tr>
+    <tr><td><code>TIMESLIDES_DEMO</code></td><td>off</td><td>Synthetic data, no UDL calls</td></tr>
+    <tr><td><code>APPSTORE_DAST_SCAN</code></td><td>off</td><td>Set by the platform's DAST stage. With no credentials, starts in demo mode</td></tr>
+    <tr><td><code>STORAGE_MOUNT_PATH</code></td><td>platform volume</td><td>Where groups and reports are written</td></tr>
+    <tr><td><code>LOG_LEVEL</code></td><td><code>INFO</code></td><td>Log verbosity</td></tr>
+    <tr><td><code>HOST</code>, <code>PORT</code></td><td>all interfaces, <code>8080</code></td><td>Listen address. The platform probes the pod's own address, so loopback alone fails every probe</td></tr>
+  </tbody>
+</table></div>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Bluestaq Limited · Mission Critical Solutions</span>
+    <span>Timeslides 1.9.1 · compiled from source 24 Nov 2026</span>
+  </div>
+</footer>
+
+</body>
+</html>
