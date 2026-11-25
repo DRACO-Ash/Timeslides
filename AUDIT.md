@@ -196,6 +196,77 @@ Two things are separated because they matter differently:
   the object, and a data-quality band in the report panel. A clean feed renders
   no band at all, so the band stays a finding rather than becoming furniture.
 
+## The rolling datum: what every offset is measured from
+
+From 1.10 every offset is measured against a rolling datum: the reference
+object's element sets, sorted by epoch, with each point offset against the
+element set at or before its time and the one after, blended linearly by
+where it falls between their epochs (`physics.Datum`). Before 1.10 the datum
+was the reference's latest element set alone, propagated back across the
+whole window. The report still computes that reading and switches to it
+with **Datum: Latest only**, so every earlier report can be reproduced.
+
+**Why.** SGP4 error grows with time from an element set's epoch. One element
+set stretched across the window puts that error on every series at once,
+where it reads as relative motion. The settled rule "latest, not earliest"
+moved the error to the left-hand edge; it did not remove it.
+
+**Evidence.** A synthetic experiment, run outside the repository because it
+needs SciPy. Truth: numerical propagation (DOP853, rtol 1e-11) of three
+co-orbital objects near 505 km with J2, J4 and drag through an atmosphere
+varying with a 27-day cycle (±35%) and a two-day storm. Element sets: SGP4
+mean elements and B* fitted daily to the preceding day of truth,
+cold-started, median fit error 0.17 km. Observations: truth with 100 m noise
+per axis, about six a day. Scored against the true along-track offset from
+the reference's true position.
+
+| Window | Latest only (RMS) | Rolling (RMS) |
+|---|---|---|
+| 7 d, four phases of the cycle | 0.21 to 1.33 s | 0.031 to 0.033 s |
+| 14 d | 4.7 to 5.1 s | 0.036 to 0.038 s |
+| 30 d | 24.6 to 27.0 s | 0.26 to 0.32 s |
+| 90 d | 271 to 297 s | 0.17 to 0.20 s |
+| 90 d, 10% bad reference element sets | 271 to 298 s | 0.18 to 0.45 s |
+
+FACT: these are synthetic. INFERENCE: the size of the gain on tenant data
+will differ; the direction should not, because the mechanism is geometric.
+FACT: one loss was measured. In the last 3 days of the 90-day run, with the
+objects 300 to 900 s apart, latest-only was better (0.08 to 0.15 s against
+0.29 to 0.40 s), because the one-day-arc element sets drift 4 to 6 km when
+used hours after their epoch. A first run that warm-started each fit from
+the previous day produced 12 km fits and inflated numbers; it was discarded.
+
+Rejected after measurement: subtracting a smoothed curve of the reference's
+measured error (4 to 30 times worse than rolling over long windows); the
+nearest element set without blending (steps at each hand-over, worse than
+the blend in every run); a hybrid switched on the measured drift (a tuned
+threshold, little gain, fragile with bad element sets); a consistency gate
+(dropped good element sets).
+
+**The check on real data.** Each report shows the RMS of the reference's own
+state vectors against each datum. On a true datum they sit at zero, so the
+smaller number is the better datum for that report, measured on its own
+data. Element sets are excluded: under the rolling datum the reference's
+element sets are the datum and sit at zero by construction.
+
+**What it costs.** No new UDL calls: the reference's element sets were
+already fetched. Blending runs SGP4 twice per point, measured at 189 ms per
+100,000 points against 97 ms, beside about 21 s of frame conversion.
+
+**What it changes for an analyst.** A burn by the reference no longer makes
+every other object appear to move; the reference sits at zero through it.
+That is the correct relative picture, so the report draws the reference
+against its own latest element set as a faint dotted line, which keeps the
+burn visible. Ticks on the plot's left edge mark each reference element-set
+epoch, so a gap in the datum shows where it falls, and the check line names
+the longest gap when it exceeds a day.
+
+**Unchanged.** The Look-ahead forecasts from beyond the newest element set,
+where the rolling datum is the latest element set alone. A hand-entered
+state is measured against the datum the plot is showing: the page sends the
+reference's chain under Rolling and the single element set under Latest
+only (`manual.parse_datum`).
+
 ## Look-ahead: what the forecast assumes
 
 The waterfall continues past the end of the window as a forecast, and the

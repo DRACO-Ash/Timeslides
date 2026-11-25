@@ -1327,6 +1327,12 @@ def test_a_manual_state_lands_where_it_should_and_is_marked_temporary(page, live
     plot = frame.locator(".panel.active .js-plotly-plot")
     plot.wait_for(timeout=60_000)
     panel = frame.locator(".panel.active")
+    # This test builds its point on the latest element set, so it measures
+    # against that datum. Under the rolling default the datum at an epoch is
+    # the blend of the element sets around it, and a point built on the latest
+    # alone sits a hair off zero, correctly. Rolling placement has its own
+    # tests in test_datum.py and below.
+    panel.locator('.datumseg button[data-datum="latest"]').click()
     banner = panel.locator(".manbanner")
     assert not banner.is_visible(), "the banner shows only while a manual state is on the plot"
 
@@ -1468,7 +1474,8 @@ _AHEAD = """gd => ({
                               visible: t.visible === undefined ? true : t.visible})),
     all: gd.data.filter(t => String(t.uid).startsWith("ahead-")).length,
     manual: gd.data.filter(t => String(t.uid).startsWith("manual-")).length,
-    shapes: (gd.layout.shapes || []).length,
+    shapes: (gd.layout.shapes || []).filter(s => s.name !== "datum-epoch").length,
+    datumTicks: (gd.layout.shapes || []).filter(s => s.name === "datum-epoch").length,
 })"""
 
 
@@ -1549,3 +1556,47 @@ def test_after_a_burn_the_report_tells_the_truth_about_what_comes_next(page, tmp
                           ".find(t => t.uid === 'ahead-passes').x.length")
     assert rings == 2
     _assert_clean(page)
+
+
+# --------------------------------------------------------------------------- #
+#  The datum (1.10)
+# --------------------------------------------------------------------------- #
+_DATUM = """gd => ({
+    ticks: (gd.layout.shapes || []).filter(s => s.name === "datum-epoch").length,
+    refTrace: gd.data.filter(t => t.uid === "datum-ref").length,
+    firstOther: gd.data[GROUPS[0].traces.findIndex(t => t.obj !== Number(ST[0].ref))].x,
+})"""
+
+
+def test_the_datum_toggle_switches_every_reading_and_says_what_it_measured(page, live_server):
+    page.goto(live_server, wait_until="load")
+    page.wait_for_selector("#groups .grp")
+    page.click("#runbtn")
+    page.wait_for_selector("#repframe:not([hidden])", timeout=120_000)
+    frame = page.frame_locator("#repframe")
+    panel = frame.locator(".panel.active")
+    plot = panel.locator(".js-plotly-plot")
+    plot.wait_for(timeout=60_000)
+    body = frame.locator("body")
+    rd = "GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref]"
+    count = body.evaluate(f"() => {rd}.datum.count")
+    other = body.evaluate("() => GROUPS[0].traces.findIndex(t => t.obj !== Number(ST[0].ref))")
+
+    # Rolling by default: named in the header, checked in the rail, ticked on the plot,
+    # and the reference's own track against its latest element set drawn faintly.
+    meta = panel.locator('[id^="datummeta-"]')
+    assert meta.inner_text() == f"Rolling · {count} element sets"
+    assert "RMS from zero against the rolling datum" in panel.locator(".datumcheck").inner_text()
+    state = plot.evaluate(_DATUM)
+    assert state["ticks"] == count and state["refTrace"] == 1
+    assert state["firstOther"] == body.evaluate(f"() => {rd}.x[{other}]")
+
+    panel.locator('.datumseg button[data-datum="latest"]').click()
+    assert meta.inner_text() == "Latest element set only"
+    state = plot.evaluate(_DATUM)
+    assert state["ticks"] == 0 and state["refTrace"] == 0
+    assert state["firstOther"] == body.evaluate(f"() => {rd}.alt.x[{other}]")
+    assert "active" in panel.locator('.datumseg button[data-datum="latest"]').get_attribute("class")
+
+    panel.locator('.datumseg button[data-datum="rolling"]').click()
+    assert plot.evaluate(_DATUM)["ticks"] == count

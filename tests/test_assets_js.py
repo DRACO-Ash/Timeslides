@@ -588,3 +588,59 @@ def test_a_card_says_what_its_drift_was_before_a_rate_change(report_js):
     got = _call(report_js, 'driftNote({driftNote: "since rate change · was +18.0"})')
     assert got == '<br><span class="driftnote">since rate change · was +18.0</span>'
     assert "&lt;b&gt;" in _call(report_js, 'driftNote({driftNote: "<b>"})')
+
+
+# --------------------------------------------------------------------------- #
+#  The datum (1.10)
+# --------------------------------------------------------------------------- #
+_DATUM_RD = ("{x: [[1, 2]], cards: ['rolling'], ahead: 'rolling-ahead', y: [['a', 'b']],"
+             " alt: {x: [[9, 8]], cards: ['latest'], ahead: 'latest-ahead'},"
+             " datum: {count: 3, epochs: ['e1', 'e2', 'e3'], gapHours: 30,"
+             " check: {n: 12, rolling: 0.0412, latest: 0.873}}}")
+
+
+@pytest.fixture
+def datum_js():
+    ctx = _context("report.js", {"report-data": REPORT_DATA})
+    ctx.eval(f"GROUPS[0].modeData[ST[0].mode].refData[ST[0].ref] = {_DATUM_RD};")
+    return ctx
+
+
+def test_the_rolling_datum_is_the_default_reading(datum_js):
+    assert _call(datum_js, "ST[0].datum") == "rolling"
+    assert _call(datum_js, "dataset(GROUPS[0]).x") == [[1, 2]]
+    assert _call(datum_js, "dataset(GROUPS[0]).cards") == ["rolling"]
+
+
+def test_latest_only_overlays_offsets_cards_and_ahead_and_shares_the_rest(datum_js):
+    datum_js.eval("ST[0].datum = 'latest';")
+    assert _call(datum_js, "dataset(GROUPS[0]).x") == [[9, 8]]
+    assert _call(datum_js, "dataset(GROUPS[0]).cards") == ["latest"]
+    assert _call(datum_js, "dataset(GROUPS[0]).ahead") == "latest-ahead"
+    assert _call(datum_js, "dataset(GROUPS[0]).y") == [["a", "b"]]
+
+
+def test_the_datum_label_names_what_the_plot_is_measured_from(report_js):
+    assert _call(report_js, "datumLabel({datum: 'rolling'}, {count: 7})") == "Rolling · 7 element sets"
+    assert _call(report_js, "datumLabel({datum: 'rolling'}, {count: 1})") == (
+        "Rolling · 1 element set, the same as latest")
+    assert _call(report_js, "datumLabel({datum: 'latest'}, {count: 7})") == "Latest element set only"
+
+
+def test_the_check_reports_both_datums_and_a_long_gap(report_js):
+    got = _call(report_js, "datumCheck({gapHours: 30, check: {n: 12, rolling: 0.0412, latest: 0.873}})")
+    assert "12 state vectors" in got
+    assert "0.04 s RMS from zero against the rolling datum" in got
+    assert "0.87 s against the latest element set alone" in got
+    assert "Longest gap between reference element sets: 30 h" in got
+    short = _call(report_js, "datumCheck({gapHours: 6, check: {n: 1, rolling: 0, latest: 0}})")
+    assert "Longest gap" not in short
+    assert "No independent check" in _call(report_js, "datumCheck({check: {n: 0}})")
+
+
+def test_epoch_ticks_are_drawn_for_a_rolling_datum_only(datum_js):
+    ticks = _call(datum_js, "datumShapes(GROUPS[0])")
+    assert [t["y0"] for t in ticks] == ["e1", "e2", "e3"]
+    assert all(t["name"] == "datum-epoch" for t in ticks)
+    datum_js.eval("ST[0].datum = 'latest';")
+    assert _call(datum_js, "datumShapes(GROUPS[0])") == []

@@ -3,6 +3,9 @@
 The method is unchanged from LEO_Waterfall_Phase_Offset.py:
 
   1. Propagate the REFERENCE TLE to t  -> r_ref, v_ref   (SGP4, TEME frame)
+     From 1.10 "the reference TLE" is the pair of reference element sets
+     either side of t, and steps 3 are blended by time between them: see
+     Datum below and AUDIT.md, "The rolling datum".
   2. Get the measured position at t    -> r_obs
   3. dr = r_obs - r_ref
      t_hat = v_ref / |v_ref|
@@ -183,7 +186,9 @@ def along_track_offsets(r_obs: np.ndarray, r_ref: np.ndarray,
 #  Reference orbit and series assembly
 # --------------------------------------------------------------------------- #
 def reference_elset(objects, ref_sat_no, ref_epoch):
-    """Choose the element set the whole waterfall is measured from.
+    """The reference's single best element set: the whole datum under
+    "Latest only", and the datum beyond the newest epoch under Rolling, which
+    is where the Look-ahead forecasts. Before 1.10 it was the only datum.
 
     Default: the LATEST element set of the reference object, or the one nearest
     ref_epoch when an epoch is asked for.
@@ -215,8 +220,119 @@ def reference_elset(objects, ref_sat_no, ref_epoch):
     return ref
 
 
-def _state_offsets(svs: list, ref_sat: Satrec, sign: float) -> list:
-    """One state-vector series against the reference orbit.
+class Datum:
+    """What every offset in a dataset is measured from.
+
+    A chain of the reference object's element sets, sorted by epoch. A point
+    at time t is offset against the element set at or before t and the one
+    after it, and the two offsets are blended linearly by where t falls
+    between their epochs. Before the first epoch the first element set is
+    used alone; after the last, the last alone, which is also what the
+    Look-ahead forecasts from.
+
+    Why a chain and not one element set: SGP4 error grows with time from an
+    element set's epoch. One element set stretched across the window puts
+    that error on every series at once, where it reads as relative motion.
+    Measured on a synthetic truth (see AUDIT.md, "The rolling datum"), the
+    rolling form cut the RMS error of a 7-day window from 0.21 to 1.33 s down
+    to 0.03 s, and of a 90-day window from about 280 s to about 0.2 s.
+
+    A chain of ONE element set is exactly the datum Timeslides used before:
+    every point takes the same branch, through the same propagation and the
+    same projection, so "latest only" is reproduced bit for bit rather than
+    reimplemented. tests/test_datum.py holds it to that.
+    """
+
+    def __init__(self, elsets: list):
+        if not elsets:
+            raise ComputeError("a datum needs at least one element set")
+        ordered = sorted(elsets, key=lambda e: e.epoch)
+        chain = []
+        for els in ordered:
+            # Two element sets at one epoch (two originators) cannot both be
+            # bracket ends: the blend weight would divide by zero. The first
+            # in epoch order is kept, which is the UDL's own order.
+            if chain and els.epoch == chain[-1].epoch:
+                continue
+            chain.append(els)
+        self.elsets = chain
+        self.epochs = [e.epoch for e in chain]
+        self.sats = [e.satrec() for e in chain]
+        self._t0 = self.epochs[0]
+        self._secs = np.array([(e - self._t0).total_seconds() for e in self.epochs])
+
+    @classmethod
+    def single(cls, sat: Satrec) -> Datum:
+        """A one-element datum from a bare satrec, for callers that hold only
+        that: the old interface, kept so nothing that used it has to change."""
+        datum = cls.__new__(cls)
+        datum.elsets, datum.epochs, datum.sats = [], [None], [sat]
+        datum._t0, datum._secs = None, np.zeros(1)
+        return datum
+
+    @property
+    def rolling(self) -> bool:
+        return len(self.sats) > 1
+
+    def longest_gap_hours(self) -> float:
+        return float(np.max(np.diff(self._secs)) / 3600.0) if self.rolling else 0.0
+
+    def _segments(self, epochs: list) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(a, b, w) per point: bracket indices and the weight of b."""
+        n = len(self.sats)
+        if n == 1:
+            zero = np.zeros(len(epochs), dtype=int)
+            return zero, zero, np.zeros(len(epochs))
+        t = np.array([(e - self._t0).total_seconds() for e in epochs])
+        a = np.searchsorted(self._secs, t, side="right") - 1
+        a = np.clip(a, 0, n - 1)
+        b = np.minimum(a + 1, n - 1)
+        span = self._secs[b] - self._secs[a]
+        w = np.where(span > 0, (t - self._secs[a]) / np.where(span > 0, span, 1.0), 0.0)
+        w = np.clip(w, 0.0, 1.0)     # before the first epoch: the first alone
+        return a, b, w
+
+    def offsets(self, epochs: list, r_obs: np.ndarray, sign: float) -> np.ndarray:
+        """Signed along-track offsets, in seconds, for positions at epochs."""
+        a, b, w = self._segments(epochs)
+        out = np.empty(len(epochs))
+        for seg in np.unique(a):
+            idx = np.nonzero(a == seg)[0]
+            when = [epochs[i] for i in idx]
+            r_a, v_a = propagate_batch(self.sats[seg], when)
+            off = along_track_offsets(r_obs[idx], r_a, v_a)
+            nxt = int(b[idx[0]])
+            if nxt != seg:
+                r_b, v_b = propagate_batch(self.sats[nxt], when)
+                off = (1.0 - w[idx]) * off + w[idx] * along_track_offsets(r_obs[idx], r_b, v_b)
+            out[idx] = sign * off
+        return out
+
+    def speed_at(self, epoch: dt.datetime) -> float:
+        """The reference's speed at an epoch, from the element set at or
+        before it, for turning seconds into kilometres."""
+        a, _b, _w = self._segments([epoch])
+        _r, v = propagate(self.sats[int(a[0])], epoch)
+        return float(np.linalg.norm(v))
+
+
+def as_datum(datum) -> Datum:
+    return datum if isinstance(datum, Datum) else Datum.single(datum)
+
+
+def reference_chain(objects, ref_sat_no) -> list:
+    """Every element set of the reference object, for a rolling datum."""
+    ref_obj = next((o for o in objects if o.sat_no == ref_sat_no), None)
+    if ref_obj is None:
+        raise ComputeError(f"reference sat {ref_sat_no} is not among the loaded objects")
+    if not ref_obj.elsets:
+        raise ComputeError(
+            f"reference sat {ref_sat_no} has no TLEs to anchor the reference orbit")
+    return list(ref_obj.elsets)
+
+
+def _state_offsets(svs: list, datum, sign: float) -> list:
+    """One state-vector series against the datum.
 
     -> [(epoch, seconds, source)]. The source travels with the point rather
     than being reconstructed alongside it, because two lists that have to stay
@@ -224,19 +340,17 @@ def _state_offsets(svs: list, ref_sat: Satrec, sign: float) -> list:
     """
     ordered = sorted(svs, key=lambda s: s.epoch)
     epochs = [s.epoch for s in ordered]
-    r_ref, v_ref = propagate_batch(ref_sat, epochs)
-    r_obs = to_teme_batch(ordered)
-    offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
+    offsets = as_datum(datum).offsets(epochs, to_teme_batch(ordered), sign).tolist()
     return [(sv.epoch, off, sv.source)
             for sv, off in zip(ordered, offsets, strict=True)]
 
 
-def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
-    """The TLE series against the reference orbit.
+def _tle_offsets(elsets: list, datum, sign: float) -> list:
+    """The TLE series against the datum.
 
     -> [(epoch, seconds, source)]. Each element set carries its own orbit, so
-    this is one SGP4 call per point for the observed side and one batched call
-    for the reference side.
+    this is one SGP4 call per point for the observed side and batched calls
+    for the datum side.
 
     The source matters more here than anywhere else on the plot. Unlike the
     state-vector series, this one is not filtered by provider: whatever the
@@ -247,16 +361,15 @@ def _tle_offsets(elsets: list, ref_sat: Satrec, sign: float) -> list:
     if not ordered:
         return []
     epochs = [e.epoch for e in ordered]
-    r_ref, v_ref = propagate_batch(ref_sat, epochs)
     r_obs = np.array([propagate(e.satrec(), e.epoch)[0] for e in ordered])
-    offsets = (sign * along_track_offsets(r_obs, r_ref, v_ref)).tolist()
+    offsets = as_datum(datum).offsets(epochs, r_obs, sign).tolist()
     return [(e.epoch, off, e.source)
             for e, off in zip(ordered, offsets, strict=True)]
 
 
-def compute_series(obj, ref_sat, invert: bool) -> dict:
+def compute_series(obj, datum, invert: bool) -> dict:
     """Offset every state source and the TLEs of `obj` against the shared
-    reference orbit. Returns {source_key: [(epoch, offset_s, source), ...]},
+    datum, a Datum or a bare satrec (a one-element datum). Returns {source_key: [(epoch, offset_s, source), ...]},
     one entry per state-vector provider present on the object plus the
     element-set series under ELSET_KEY.
 
@@ -265,7 +378,8 @@ def compute_series(obj, ref_sat, invert: bool) -> dict:
     because the element-set query is not filtered by provider.
     """
     sign = -1.0 if invert else 1.0
-    out = {key: _state_offsets(svs, ref_sat, sign)
+    datum = as_datum(datum)
+    out = {key: _state_offsets(svs, datum, sign)
            for key, svs in obj.state_series.items()}
-    out[ELSET_KEY] = _tle_offsets(obj.elsets, ref_sat, sign)
+    out[ELSET_KEY] = _tle_offsets(obj.elsets, datum, sign)
     return out

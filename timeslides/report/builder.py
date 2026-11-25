@@ -41,7 +41,7 @@ import numpy as np
 from ..errors import ComputeError
 from ..models import (ELSET_KEY, SRC_LABEL, SRC_ORDER, SRC_SHAPE, SRC_SYMBOL,
                       UNATTRIBUTED)
-from ..physics import compute_series, propagate, reference_elset
+from ..physics import Datum, compute_series, propagate, reference_chain, reference_elset
 from ..quality import summarise
 from ..storage import VolumeWriter
 
@@ -166,18 +166,16 @@ def _object_traces(sat_no, name, present, series):
     return xs, ys, srcs, card
 
 
-def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, invert, window):
-    """One (mode, reference) dataset with a FIXED layout: for each sat, one trace
-    per source key in `present` (state providers, then the element-set series).
-    Missing data yields empty arrays so trace indices stay stable for restyle."""
-    ref_elset = reference_elset(list(objects_by_sat.values()), ref_no, ref_epoch)
-    ref_sat = ref_elset.satrec()
+def _measure(objects_by_sat, sat_order, present, names, ref_no, datum, invert, window):
+    """Every object's series, cards and Look-ahead against one datum."""
     colour = _sat_colours(sat_order, ref_no)
-    xs, ys, srcs, colours, cards, tracked = [], [], [], [], [], []
+    xs, ys, srcs, colours, cards, tracked, ref_series = [], [], [], [], [], [], {}
     for s in sat_order:
         obj = objects_by_sat.get(s)
         nm = names.get(s, f"OBJECT {s}")
-        series = compute_series(obj, ref_sat, invert) if obj else {}
+        series = compute_series(obj, datum, invert) if obj else {}
+        if s == ref_no:
+            ref_series = series
         obj_xs, obj_ys, obj_srcs, card = _object_traces(s, nm, present, series)
         xs.extend(obj_xs)
         ys.extend(obj_ys)
@@ -200,18 +198,61 @@ def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, inver
             # the relative-motion rows, which read it, mistimed every pass.
             card["drift"] = rate["rate"]
             card["driftNote"] = f"since rate change · was {rate['was']:+.1f}"
-    _r0, v0 = propagate(ref_sat, window[0])
+    return {"x": xs, "y": ys, "srcs": srcs, "colours": colours, "cards": cards,
+            "ahead": ahead, "ref_series": ref_series}
+
+
+def _rms(series: dict) -> tuple[int, float | None]:
+    """The reference's own state vectors: on a true datum these sit at zero,
+    so their RMS is the datum's error, measured. Element sets are left out:
+    under a rolling datum the reference's element sets ARE the datum and sit
+    at zero by construction, so they would prove nothing."""
+    vals = [off for key, ser in series.items() if key != ELSET_KEY for _e, off, _s in ser]
+    if not vals:
+        return 0, None
+    return len(vals), round(float(np.sqrt(np.mean(np.square(vals)))), 3)
+
+
+def _dataset(objects_by_sat, sat_order, present, names, ref_no, ref_epoch, invert, window):
+    """One (mode, reference) dataset with a FIXED layout: for each sat, one trace
+    per source key in `present` (state providers, then the element-set series).
+    Missing data yields empty arrays so trace indices stay stable for restyle.
+
+    Measured twice. The main reading is against the rolling datum, the
+    reference's element sets blended by time (physics.Datum). `alt` is the
+    same points against the latest element set alone, the datum this
+    application used before, so any earlier report can be reproduced exactly
+    and the two compared. Only the offsets, cards and Look-ahead differ; the
+    epochs, sources and colours are shared rather than sent twice.
+    """
+    objects = list(objects_by_sat.values())
+    ref_elset = reference_elset(objects, ref_no, ref_epoch)
+    rolling = Datum(reference_chain(objects, ref_no))
+    main = _measure(objects_by_sat, sat_order, present, names, ref_no, rolling, invert, window)
+    alt = _measure(objects_by_sat, sat_order, present, names, ref_no,
+                   Datum([ref_elset]), invert, window)
+    n_check, rms_rolling = _rms(main["ref_series"])
+    _n, rms_latest = _rms(alt["ref_series"])
+    _r0, v0 = propagate(ref_elset.satrec(), window[0])
     return {
-        "x": xs,
-        "y": ys,
-        "srcs": srcs,
-        "colours": colours,
-        "cards": cards,
+        "x": main["x"],
+        "y": main["y"],
+        "srcs": main["srcs"],
+        "colours": main["colours"],
+        "cards": main["cards"],
         "vkms": round(float(np.linalg.norm(v0)), 3),
-        # The datum itself, so a hand-entered state is measured against
-        # exactly what this dataset was. See timeslides/manual.py.
+        # The latest element set, which is the whole datum when "Latest only"
+        # is chosen. The rolling chain's lines are held once per object at
+        # mode level (modeData.chains), not repeated in every dataset.
         "tle": [ref_elset.line1, ref_elset.line2],
-        "ahead": ahead}
+        "ahead": main["ahead"],
+        "alt": {"x": alt["x"], "cards": alt["cards"], "ahead": alt["ahead"]},
+        "datum": {
+            "count": len(rolling.sats),
+            "epochs": [e.isoformat() for e in rolling.epochs],
+            "gapHours": round(rolling.longest_gap_hours(), 1),
+            "check": {"n": n_check, "rolling": rms_rolling, "latest": rms_latest},
+        }}
 
 
 # --------------------------------------------------------------------------- #
@@ -355,7 +396,12 @@ def _mode_data(objects_by_mode, mode_order, sat_order, present, names,
         if not ref_sets:
             continue
         dref = default_ref if str(default_ref) in ref_sets else refs[0]["norad"]
-        out[mlabel] = {"refData": ref_sets, "refs": refs, "defaultRef": dref}
+        by_sat = objects_by_mode.get(mlabel, {})
+        chains = {str(r["norad"]): [[e.line1, e.line2] for e in
+                                    Datum(by_sat[r["norad"]].elsets).elsets]
+                  for r in refs}
+        out[mlabel] = {"refData": ref_sets, "refs": refs, "defaultRef": dref,
+                       "chains": chains}
     if not out:
         raise ComputeError(f"[{name}] no usable data in any requested mode.")
     return out
@@ -529,6 +575,30 @@ def _ahead_section(p) -> str:
       </div>"""
 
 
+def _datum_section(p) -> str:
+    """What every offset is measured from, and the evidence that it is right.
+
+    The check line is filled by report.js from the dataset: the RMS of the
+    reference's own state vectors under each datum. On a true datum those sit
+    at zero, so the smaller number is the better datum, measured on this
+    report's own data rather than asserted.
+    """
+    pid = p["id"]
+    return f"""
+      <div class="datum">
+        <h2>Datum
+          <span class="datumseg" role="group" aria-label="Datum">
+            <button type="button" data-datum="rolling" class="active">Rolling</button>
+            <button type="button" data-datum="latest">Latest only</button></span></h2>
+        <p class="datumcheck" id="datumcheck-{pid}" aria-live="polite"></p>
+        <p class="hint">Rolling: each point is measured against the reference's
+        element sets either side of its own time, blended. Latest only: against
+        the newest element set alone, as reports before 1.10 were. The faint
+        line is the reference against its latest element set, so a burn by the
+        reference itself stays visible.</p>
+      </div>"""
+
+
 def _manual_inputs(pid) -> str:
     """The six state-vector components, in kilometres and km/s."""
     fields = [("x", "x", "km"), ("y", "y", "km"), ("z", "z", "km"),
@@ -612,6 +682,7 @@ def _panel_section(p, active) -> str:
     <div class="pmname">{name}</div>
     <div class="meta">
       <div><div class="k">Reference</div><div class="v copper" id="refmeta-{p['id']}"></div></div>
+      <div><div class="k">Datum</div><div class="v datumv" id="datummeta-{p['id']}"></div></div>
       <div><div class="k">Data mode</div><div class="v" id="modemeta-{p['id']}"></div></div>
       <div><div class="k">Window</div><div class="v">{esc(p['window_start'])} &rarr; {esc(p['window_end'])}</div></div>
       <div><div class="k">Sources</div><div class="v">{esc(p['source'])}</div></div>
@@ -627,6 +698,7 @@ def _panel_section(p, active) -> str:
         <select class="refsel" data-group="{p['id']}" id="refsel-{p['id']}"
                 aria-label="Reference object for {name}"></select>
       </div>
+      {_datum_section(p)}
       <div>
         <h2>Data sources &mdash; toggle (shape = source)</h2>
         <div class="srcseg" data-group="{p['id']}">

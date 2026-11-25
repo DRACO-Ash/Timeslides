@@ -74,8 +74,7 @@ footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8p
     <h1>Timeslides API Reference</h1>
     <p class="sub">Every HTTP route the Timeslides application serves: along-track phase offset for LEO objects, from UDL state vectors and element sets. What each route does, what it accepts, what it returns, and whether it reaches the UDL.</p>
     <div class="facts">
-      <span class="chip">Version <b>1.9.1</b></span>
-      <span class="chip">Commit <b>d8e1972</b></span>
+      <span class="chip">Version <b>1.10.0</b></span>
       <span class="chip">Routes <b>15</b></span>
       <span class="chip">Port <b>8080</b></span>
       <span class="chip">Compiled <b>24 Nov 2026</b></span>
@@ -335,7 +334,7 @@ footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8p
 <div class="ep" id="runs-report">
   <div class="ephead"><span class="m GET">GET</span><span class="path">/api/runs/{run_id}/report</span><span class="tags"><span class="tag local">Local</span></span></div>
   <div class="epbody">
-    <p>The finished report: a self-contained HTML document with the waterfall plot, object cards, the Look-ahead forecast and pass list. It is several megabytes, streamed from the volume, or from memory if the volume refused it.</p>
+    <p>The finished report: a self-contained HTML document with the waterfall plot, object cards, the Look-ahead forecast and pass list. Every offset is measured against a rolling datum, the reference's element sets blended by time, and also against its latest element set alone; the report switches between the two and shows a check of each against the reference's own state vectors. It is several megabytes, streamed from the volume, or from memory if the volume refused it.</p>
     <div class="label">Caching</div>
     <p>Returns <code>ETag: "&lt;run_id&gt;"</code> and <code>Cache-Control: private, max-age=3600</code>. A report never changes once written, so sending the ETag back as <code>If-None-Match</code> returns <code>304</code>.</p>
     <div class="label">Responses</div>
@@ -360,7 +359,8 @@ footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8p
         <tr><td><code>vx</code>, <code>vy</code>, <code>vz</code></td><td>Velocity, km/s</td></tr>
         <tr><td><code>elset</code></td><td>A pasted two- or three-line element set, up to 400 characters</td></tr>
         <tr><td><code>label</code></td><td>Optional display name, up to 200 characters</td></tr>
-        <tr><td><code>tle</code></td><td>Required: the report reference's two TLE lines, which the report page supplies</td></tr>
+        <tr><td><code>tle</code></td><td>The reference's latest element set as two TLE lines. Used alone when <code>datum</code> is empty (the "Latest only" datum, and the only form pages before 1.10 send)</td></tr>
+        <tr><td><code>datum</code></td><td>The rolling datum: the reference's element sets as line pairs, up to 5,000. The point is measured against the two either side of its own epoch, blended by time, exactly as the plot measures every point. The report page supplies it</td></tr>
         <tr><td><code>invert</code></td><td>Match the report's sign convention</td></tr>
       </tbody>
     </table></div>
@@ -411,7 +411,7 @@ footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8p
 <footer>
   <div class="wrap">
     <span>Bluestaq Limited · Mission Critical Solutions</span>
-    <span>Timeslides 1.9.1 · compiled from source 24 Nov 2026</span>
+    <span>Timeslides 1.10.0 · compiled from source 24 Nov 2026</span>
   </div>
 </footer>
 

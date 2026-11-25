@@ -82,6 +82,10 @@ class ManualBody(BaseModel):
     elset: str = Field(default="", max_length=400)
     label: str = Field(default="", max_length=200)
     tle: list = Field(default_factory=list, max_length=2)
+    # The rolling datum: the reference's element sets as line pairs. Bounded
+    # here so an oversized body never reaches the parser; manual.py checks
+    # each pair.
+    datum: list = Field(default_factory=list, max_length=5000)
     invert: bool = False
 
 

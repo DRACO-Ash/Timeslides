@@ -19,14 +19,21 @@ alone has already cost several more.
   and bare filenames; the scanner then resolves nothing and the gate reports
   0.0%. Verified on a real SonarQube: project-rooted gives 100.0%,
   package-rooted gives 0.0%. `docker/sonar-probe.sh` reruns that experiment.
-● **The reference orbit is the LATEST element set of the reference object**,
-  not the earliest. It is the datum every offset is measured from, so it must
-  be the best current knowledge. Anchoring on the earliest propagates the
-  oldest orbit across the whole window, and SGP4 error grows with time since
-  epoch, so drift belonging to the reference appears in every series at once
-  and reads as real relative motion. `demo.py` must advance each element set's
-  angles with SGP4's own secular rates (`mdot`, `argpdot`, `nodedot`) or the
-  synthetic reference does not sit at zero against itself.
+● **Offsets are measured against a ROLLING datum** (1.10): the reference
+  object's element sets, each point offset against the two either side of its
+  own time, blended (`physics.Datum`). This replaced "the LATEST element set",
+  which had itself replaced "the earliest". Both single-element-set datums put
+  SGP4's growing error on every series at once, where it reads as relative
+  motion; latest only moved it to the left-hand edge. The evidence, including
+  the one case where latest-only measured better, is in AUDIT.md under "The
+  rolling datum". Latest only is still computed (`alt` in every dataset) and
+  reachable with the report's Datum toggle, and a chain of one element set is
+  bit-identical to the old datum: keep it that way, tests/test_datum.py holds
+  it. The reference's own element sets sit at exactly zero under the rolling
+  datum by construction, so they never count as evidence for it; the report's
+  check uses the reference's state vectors only. `demo.py` must still advance
+  each element set's angles with SGP4's own secular rates (`mdot`, `argpdot`,
+  `nodedot`) or the synthetic element sets disagree with each other.
 ● **Credentials come from the environment.** `UDL_USER` and `UDL_PASS`, never a
   file in the repo. The application fails closed at boot without them, with one
   exception: the platform's DAST stage starts the image with no secrets and

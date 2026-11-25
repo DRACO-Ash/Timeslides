@@ -18,7 +18,8 @@ const SRCLBL = REPORT_DATA.srclbl;
 const ST = {};
 GROUPS.forEach(g => {
   ST[g.id] = { sources:new Set(g.present), hidden:new Set(),
-                mode:g.defaultMode, ref:String(g.defaultRef), manual:[], horizon:null };
+                mode:g.defaultMode, ref:String(g.defaultRef), manual:[], horizon:null,
+                datum:"rolling" };
   g.cards = []; g.vkms = 1;
 });
 
@@ -49,11 +50,21 @@ function refOptions(g){
   ).join("");
 }
 
+/* The dataset for the chosen datum. The server measures every point twice:
+ * against the rolling datum (the main reading) and against the latest element
+ * set alone (`alt`). Only the offsets, cards and Look-ahead differ, so "Latest
+ * only" overlays those three and shares everything else. */
+function dataset(g){
+  const st = ST[g.id];
+  const rd = g.modeData[st.mode].refData[st.ref];
+  return st.datum === "latest" && rd.alt ? {...rd, ...rd.alt} : rd;
+}
+
 function applyData(g){
   const st = ST[g.id];
   const md = g.modeData[st.mode];
   if(!md.refData[st.ref]) st.ref = String(md.defaultRef);   // ref absent in this mode
-  const rd = md.refData[st.ref];
+  const rd = dataset(g);
   g.cards = rd.cards; g.vkms = rd.vkms;
   if(window.Plotly)
     Plotly.restyle(g.divId, {x: rd.x, y: rd.y, "marker.color": rd.colours}, ownTraces(g));
@@ -66,7 +77,7 @@ function applyData(g){
   if(sel && sel.value !== st.ref) sel.value = st.ref;
   panelEl(g.id).querySelectorAll(".modeseg button").forEach(b =>
     b.classList.toggle("active", b.dataset.mode===st.mode));
-  buildCards(g); buildRelative(g); apply(g); replotManual(g); drawAhead(g);
+  buildCards(g); buildRelative(g); apply(g); replotManual(g); drawAhead(g); drawDatum(g);
 }
 
 function setRef(g, refNo){ ST[g.id].ref = String(refNo); applyData(g); }
@@ -228,10 +239,14 @@ function refusal(data){
 
 function manualRequest(g, body){
   const st = ST[g.id];
-  const tle = g.modeData[st.mode].refData[st.ref].tle;
+  const md = g.modeData[st.mode];
+  const tle = md.refData[st.ref].tle;
+  // Measured against the datum the plot is showing: the reference's chain
+  // under the rolling datum, its latest element set alone otherwise.
+  const datum = st.datum === "rolling" ? (md.chains?.[st.ref] ?? []) : [];
   return fetch("/api/manual-state", {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({...body, tle, invert: g.invert})
+    body: JSON.stringify({...body, tle, datum, invert: g.invert})
   }).then(res => res.json().then(data => res.ok ? data : Promise.reject(refusal(data))));
 }
 
@@ -263,13 +278,12 @@ function replotManual(g){
  * one for the chosen horizon and draws it, and nothing else. */
 function aheadHorizon(g){
   const st = ST[g.id];
-  const ahead = g.modeData[st.mode].refData[st.ref].ahead;
+  const ahead = dataset(g).ahead;
   return ahead ? (st.horizon ?? ahead.default) : null;
 }
 
 function aheadView(g){
-  const st = ST[g.id];
-  const ahead = g.modeData[st.mode].refData[st.ref].ahead;
+  const ahead = dataset(g).ahead;
   return ahead ? ahead.views[aheadHorizon(g)] : null;
 }
 
@@ -285,8 +299,70 @@ function drawAhead(g){
     .filter(i => i >= 0);
   if(old.length) Plotly.deleteTraces(g.divId, old);
   if(v?.traces.length) Plotly.addTraces(g.divId, v.traces);
-  Plotly.relayout(g.divId, {shapes: v ? v.shapes : [], annotations: v ? v.annotations : []});
+  const shapes = (v ? v.shapes : []).concat(datumShapes(g));
+  Plotly.relayout(g.divId, {shapes, annotations: v ? v.annotations : []});
   aheadVisibility(g);
+}
+
+/* The datum. Ticks on the plot's left edge mark each reference element-set
+ * epoch under the rolling datum, so a gap in the datum is visible where it
+ * falls. The faint line is the reference against its own latest element set:
+ * under a rolling datum the reference sits at zero through its own burn, and
+ * this is what keeps that burn visible. */
+const DATUM_GREEN = "#27AE60";
+
+function datumShapes(g){
+  const st = ST[g.id];
+  const d = g.modeData[st.mode].refData[st.ref].datum;
+  if(st.datum !== "rolling" || !d || d.count < 2) return [];
+  return d.epochs.map(y => ({type: "line", name: "datum-epoch", xref: "paper", x0: 0, x1: 0.012,
+    yref: "y", y0: y, y1: y, line: {color: DATUM_GREEN, width: 2}}));
+}
+
+function datumLabel(st, d){
+  if(st.datum === "latest") return "Latest element set only";
+  const sets = d.count === 1 ? "1 element set, the same as latest" : d.count + " element sets";
+  return "Rolling · " + sets;
+}
+
+function datumCheck(d){
+  const c = d.check;
+  if(!c?.n) return "No independent check: the reference has no state vectors in this window.";
+  let text = "Check: the reference's own " + c.n + " state vectors sit " +
+    c.rolling.toFixed(2) + " s RMS from zero against the rolling datum, " +
+    c.latest.toFixed(2) + " s against the latest element set alone.";
+  if(d.gapHours > 24) text += " Longest gap between reference element sets: " + d.gapHours + " h.";
+  return text;
+}
+
+function referenceTrace(g, rd){
+  const ref = Number(ST[g.id].ref);
+  const pts = [];
+  g.traces.forEach((t, i) => {
+    if(t.obj !== ref) return;
+    rd.alt.x[i].forEach((x, k) => pts.push([rd.y[i][k], x]));
+  });
+  pts.sort((a, b) => a[0].localeCompare(b[0]));
+  return {type: "scatter", mode: "lines", uid: "datum-ref", name: "reference vs latest",
+    x: pts.map(p => p[1]), y: pts.map(p => p[0]), showlegend: false, hoverinfo: "skip",
+    opacity: 0.5, line: {color: "#C67C00", width: 1, dash: "dot"}};
+}
+
+function drawDatum(g){
+  const st = ST[g.id];
+  const rd = g.modeData[st.mode].refData[st.ref];
+  const d = rd.datum;
+  panelEl(g.id).querySelectorAll(".datumseg button").forEach(b =>
+    b.classList.toggle("active", b.dataset.datum === st.datum));
+  const meta = document.getElementById("datummeta-"+g.id);
+  if(meta && d) meta.textContent = datumLabel(st, d);
+  const check = document.getElementById("datumcheck-"+g.id);
+  if(check && d) check.textContent = datumCheck(d);
+  if(!window.Plotly) return;
+  const gd = document.getElementById(g.divId);
+  const old = (gd.data || []).findIndex(t => t.uid === "datum-ref");
+  if(old >= 0) Plotly.deleteTraces(g.divId, old);
+  if(st.datum === "rolling" && rd.alt && d?.count > 1) Plotly.addTraces(g.divId, referenceTrace(g, rd));
 }
 
 /* An isolated object's forecast goes with it. Only the projected line and
@@ -328,6 +404,8 @@ function init(){
       plotManual(g, Object.fromEntries(new FormData(form))));
     panelEl(g.id).querySelectorAll(".horizon button").forEach(b =>
       b.addEventListener("click", () => { ST[g.id].horizon = b.dataset.h; drawAhead(g); }));
+    panelEl(g.id).querySelectorAll(".datumseg button").forEach(b =>
+      b.addEventListener("click", () => { ST[g.id].datum = b.dataset.datum; applyData(g); }));
     const list = document.getElementById("manlist-"+g.id);
     if(list) list.addEventListener("click", e => {
       const row = e.target.closest(".manx") ? e.target.closest(".manrow") : null;

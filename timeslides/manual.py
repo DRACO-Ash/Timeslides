@@ -44,7 +44,7 @@ import numpy as np
 
 from .errors import ValidationError
 from .models import Elset, StateVector
-from .physics import along_track_offset, propagate, to_teme
+from .physics import Datum, propagate, to_teme
 from .pipeline import MAX_WINDOW_DAYS
 from .report.builder import esc
 
@@ -220,35 +220,58 @@ def parse_pasted_elset(raw) -> Elset:
     return els
 
 
-def offset_against(epoch: dt.datetime, r_teme: np.ndarray, ref: Elset,
+MAX_CHAIN = 5000   # reference element sets accepted in one request
+
+
+def parse_datum(body: dict) -> Datum:
+    """The datum the page's plot was measured against.
+
+    With `datum`, a list of the reference's element sets as line pairs, it is
+    the rolling datum: a hand-entered point is measured against the blend at
+    its own epoch, as every plotted point is. With only `tle`, it is that one
+    element set, the "Latest only" datum and the only form older pages send.
+    """
+    chain = body.get("datum") or []
+    if chain:
+        if not isinstance(chain, list | tuple) or len(chain) > MAX_CHAIN:
+            raise ValidationError(
+                f"the datum must be a list of at most {MAX_CHAIN} element sets")
+        return Datum([parse_reference(pair) for pair in chain])
+    return Datum([parse_reference(body.get("tle"))])
+
+
+def offset_against(epoch: dt.datetime, r_teme: np.ndarray, datum,
                    invert: bool) -> tuple[float, float]:
     """(offset in seconds, reference speed in km/s) for a TEME position.
 
-    Propagate the reference to the epoch and project onto its direction of
-    travel: the step both kinds share, and the same one the report's series
-    take for every point.
+    Measured against the datum at the epoch and projected onto the
+    reference's direction of travel: the step both kinds share, and the same
+    one the report's series take for every point. `datum` is a Datum or a
+    single reference Elset.
     """
-    gap = abs((epoch - ref.epoch).total_seconds()) / 86400.0
+    if isinstance(datum, Elset):
+        datum = Datum([datum])
+    nearest = min(datum.epochs, key=lambda e: abs((epoch - e).total_seconds()))
+    gap = abs((epoch - nearest).total_seconds()) / 86400.0
     if gap > MAX_WINDOW_DAYS:
         raise ValidationError(
-            f"epoch is {gap:,.0f} days from the reference element set "
-            f"({ref.epoch:%d %b %Y %H:%M}Z). SGP4 is not meaningful beyond "
+            f"epoch is {gap:,.0f} days from the nearest reference element set "
+            f"({nearest:%d %b %Y %H:%M}Z). SGP4 is not meaningful beyond "
             f"{MAX_WINDOW_DAYS} days, so this cannot be placed against it.")
-    r_ref, v_ref = propagate(ref.satrec(), epoch)
     sign = -1.0 if invert else 1.0
-    offset = sign * along_track_offset(r_teme, r_ref, v_ref)
-    return offset, float(np.linalg.norm(v_ref))
+    offset = float(datum.offsets([epoch], np.asarray(r_teme, dtype=float)[None, :], sign)[0])
+    return offset, datum.speed_at(epoch)
 
 
-def manual_offset(sv: StateVector, ref: Elset, invert: bool) -> tuple[float, float]:
+def manual_offset(sv: StateVector, ref, invert: bool) -> tuple[float, float]:
     """A state vector, as physics._state_offsets places one: to TEME, then
-    projected at its own epoch."""
+    measured at its own epoch."""
     return offset_against(sv.epoch, to_teme(sv), ref, invert)
 
 
-def elset_offset(els: Elset, ref: Elset, invert: bool) -> tuple[float, float]:
+def elset_offset(els: Elset, ref, invert: bool) -> tuple[float, float]:
     """An element set, as physics._tle_offsets places one: propagated to its
-    own epoch, which gives a TEME position, then projected there."""
+    own epoch, which gives a TEME position, then measured there."""
     r_obs, _v = propagate(els.satrec(), els.epoch)
     return offset_against(els.epoch, r_obs, ref, invert)
 
@@ -316,7 +339,7 @@ def parse_kind(raw) -> str:
     return kind
 
 
-def _observe(kind: str, body: dict, ref: Elset, invert: bool) -> tuple:
+def _observe(kind: str, body: dict, ref: Datum, invert: bool) -> tuple:
     """-> (epoch, offset, reference speed, detail) for either kind."""
     if kind == "elset":
         els = parse_pasted_elset(body.get("elset"))
@@ -341,7 +364,7 @@ def plot_manual(body: dict) -> dict:
     """
     kind = parse_kind(body.get("kind"))
     label = parse_label(body.get("label"))
-    ref = parse_reference(body.get("tle"))
+    ref = parse_datum(body)
     epoch, offset, speed, detail = _observe(kind, body, ref, bool(body.get("invert")))
     km = abs(offset) * speed
     uid = "manual-" + uuid.uuid4().hex[:12]

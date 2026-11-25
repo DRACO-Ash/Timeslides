@@ -273,3 +273,16 @@ main{display:grid; grid-template-columns:360px 1fr; min-height:0}
 .ev-far .evwhen{background:transparent; color:var(--muted); border:1px solid var(--line-strong)}
 .ahead .hint{margin:8px 0 0}
 .driftnote{color:#E0952A}
+
+/* The datum: what every offset is measured from, and its check. */
+.datum h2{display:flex; justify-content:space-between; align-items:center; gap:8px}
+.datumseg{display:flex; gap:3px; background:var(--panel); border:1px solid var(--line);
+  border-radius:8px; padding:2px; text-transform:none; letter-spacing:0}
+.datumseg button{appearance:none; border:0; background:transparent; cursor:pointer;
+  color:var(--muted); font:inherit; font-size:11px; padding:3px 8px; border-radius:6px}
+.datumseg button:hover{color:var(--text)}
+.datumseg button.active{background:#27AE60; color:#08130C; font-weight:600}
+.datumseg button:focus-visible{outline:2px solid #27AE60; outline-offset:1px}
+.datumcheck{font-family:var(--mono); font-size:11px; color:var(--text); margin:6px 0 0}
+.datum .hint{margin:6px 0 0}
+.meta .datumv{color:#27AE60}
