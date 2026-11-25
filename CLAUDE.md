@@ -78,7 +78,10 @@ alone has already cost several more.
   renders and `tests/test_js_suite.py` fails if they drift. A local SonarQube
   with that LCOV reads 99.4%. Adding a `package.json` risks the platform
   re-detecting the template as node-react; the platform itself asked for one,
-  and that risk is recorded in AUDIT.md under "Quality gate".
+  and that risk is recorded in AUDIT.md under "Quality gate". FACT, 1.10.1:
+  it did not swap the template; it added an **App Build** stage that runs
+  `npm run build` on node:24-alpine and failed on a missing script. `build`
+  is now `node --check` on both assets, and a test requires both scripts.
 ● **A failing test stage uploads no artefacts**, so the scan gets no coverage
   report and the gate reads 0.0%. A test that fails for an environmental reason
   therefore breaks the coverage gate. Structural checks use `repo_file()`, which
@@ -89,6 +92,7 @@ alone has already cost several more.
 ```bash
 .venv/bin/python -m pytest          # 100% of timeslides, no exceptions
 npm test                            # the JavaScript suite and coverage/lcov.info
+npm run build                       # the App Build stage runs it: a syntax check
 .venv/bin/ruff check .
 npx eslint .
 sh docker/appstore-sim.sh           # both passes: normal, and hostile ingest

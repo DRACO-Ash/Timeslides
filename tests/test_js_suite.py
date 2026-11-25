@@ -92,3 +92,25 @@ def test_the_node_suite_passes_and_writes_the_coverage_report(tmp_path):
         expected.append("eslint.config.mjs")
     for rel in expected:
         assert f"SF:{rel}\n" in lcov, f"no coverage record for {rel}"
+
+
+def test_package_json_declares_every_script_the_platform_runs():
+    """1.10.1 failed its App Build stage on `npm error Missing script: "build"`:
+    with a package.json present the platform runs `npm run build` as well as
+    `npm test -- --coverage`. Both must exist, and neither may need anything
+    installed, because the package deliberately has no dependencies."""
+    import json
+    pkg = json.loads(repo_file("package.json", "the Node test project").read_text())
+    assert {"build", "test"} <= set(pkg["scripts"])
+    assert not pkg.get("dependencies") and not pkg.get("devDependencies")
+
+
+def test_the_build_script_passes_here():
+    pkg = repo_file("package.json", "the Node test project")
+    npm = shutil.which("npm")
+    if npm is None:
+        pytest.skip("npm is not installed here, so `npm run build` NOT run; the "
+                    "App Store's App Build stage runs it itself")
+    proc = subprocess.run([npm, "run", "build"], cwd=pkg.parent, capture_output=True,
+                          text=True, timeout=120, check=False)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]

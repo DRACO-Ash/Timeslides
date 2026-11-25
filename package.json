@@ -1,6 +1,6 @@
 {
   "name": "timeslides-browser-tests",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "private": true,
   "description": "Tests and coverage for Timeslides' browser assets. No dependencies: Node's own test harness and V8 coverage through the built-in inspector.",
   "license": "UNLICENSED",
@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "build": "node --check timeslides/report/assets/report.js && node --check timeslides/report/assets/picker.js",
     "test": "node tests/js/run.mjs"
   }
 }
