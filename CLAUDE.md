@@ -55,8 +55,12 @@ alone has already cost several more.
 
 ## The App Store pipeline, as observed
 
-● Nine stages. `test` and `code-quality-scan` are **separate jobs with separate
-  fresh checkouts**. Anything written by one is not automatically in the other.
+● Thirteen stages as of 1.10.2, all passed and deployed: Dependencies, SAST
+  Scan, SAST Findings, Dependency Scanning, Test, App Build (present because
+  of `package.json`), Code Quality, Dockerfile Lint, Container Build, DAST
+  Scan, Logging, Container Scan, Deploy. `test` and `code-quality-scan` are
+  **separate jobs with separate fresh checkouts**. Anything written by one is
+  not automatically in the other.
 ● The scan's configuration arrives as `-D` flags via `SONAR_SCANNER_OPTS`, which
   override `sonar-project.properties` and the plugin defaults alike.
 ● `sonar-project.properties` is committed here and has been observed **absent**
