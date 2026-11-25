@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import audit
-from .audit import event, request_fields
+from .audit import event, outcome, request_fields
 from .config import Settings, load_settings
 from .errors import TimeslidesError, ValidationError
 from .groups import GroupStore
@@ -207,6 +207,7 @@ def _register_request_log(app: FastAPI) -> None:
         response = await call_next(request)
         event("http.request", **request_fields(request),
               **{"http.response.status_code": response.status_code,
+                 "event.outcome": outcome(response.status_code),
                  "http.server.request.duration_ms":
                      round((time.perf_counter() - started) * 1000, 1)})
         return response
@@ -216,6 +217,8 @@ def _register_error_handler(app: FastAPI) -> None:
     @app.exception_handler(TimeslidesError)
     async def handle(request: Request, exc: TimeslidesError):
         event("request.rejected", **request_fields(request),
+              **{"http.response.status_code": exc.status,
+                 "event.outcome": outcome(exc.status)},
               error=type(exc).__name__, detail=str(exc))
         return JSONResponse(status_code=exc.status,
                             content={"error": type(exc).__name__, "detail": str(exc)})

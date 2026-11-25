@@ -122,6 +122,11 @@ def test_a_dast_scan_with_no_secrets_answers_on_its_port_and_logs_only_to_stdout
     assert first["http.request.header.x-request-id"] == "req-42"
     assert first["user.email"] == "dast@example.org"
     assert first["http.response.status_code"] == 200
+    # The Logging stage's full list for a request line, 1.10.0's advisory.
+    assert first["event.outcome"] == "success"
+    assert first["user_agent.original"]
+    assert {"url.path", "http.request.method", "http.response.status_code",
+            "user_agent.original", "event.outcome"} <= set(first)
     for forbidden in ("never-log-me", "session=never", "never-log-this-either", "?token"):
         assert forbidden not in out
 

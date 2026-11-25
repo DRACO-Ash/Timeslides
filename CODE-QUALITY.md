@@ -45,6 +45,7 @@ because the first version flagged its own explanatory comment.
 | Finding | Rule | Enforced by |
 |---|---|---|
 | "Prefer using an optional chain expression" (three times; 1.9.0 was `v && v.traces.length`) | `x && x.y` is `x?.y`, at any depth of the access chain | eslint local rule, `find_redundant_guards` |
+| "JavaScript source but no runnable test project": coverage 72.2% (1.10.0) | the assets have a Node test project whose LCOV the platform reads | `package.json`, `tests/js/run.mjs`, `tests/test_js_suite.py` |
 | "Handle this exception or don't catch it at all" | no empty catch, no unread catch binding | `no-empty`, `no-unused-vars`, `find_empty_catches`, `find_unread_catch_bindings` |
 | "The empty object is useless" | no empty literal spread or merged | `prefer-object-spread`, `find_object_assign` |
 | Bare `parseInt` | use the `Number` namespace | `no-restricted-globals`, `find_bare_number_globals` |
@@ -66,6 +67,7 @@ unrelated. It is now a local ESLint rule that compares the two sides.
 | Finding | Rule | Enforced by |
 |---|---|---|
 | Duplicate selector | one top-level rule per selector | `find_duplicate_selectors` |
+| "Text does not meet the minimal contrast requirement" (css:S7924, `docs/api.html`, 1.10.0) | text sits on a solid colour; the scanner cannot composite `rgba()` over what lies beneath, so translucent backgrounds read as near-white | review; the rule did not fire on the local SonarQube, so the platform's rule set is wider than the replica's |
 | — | every `!important` carries a comment saying why | `find_unexplained_important` |
 
 `!important` is not banned. Beating an inline style that JavaScript sets, or

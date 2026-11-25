@@ -29,3 +29,6 @@ coverage-reports/
 # and the ingested repository carried an old copy of the whole application.
 # Built from `git ls-files`, so a tracked build output feeds itself.
 dist/
+
+# The Node suite writes its LCOV report here (tests/js/run.mjs).
+coverage/

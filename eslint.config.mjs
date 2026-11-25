@@ -120,6 +120,33 @@ export default [
       "**/__pycache__/**",
     ],
   },
+  /* The Node suite for the assets (tests/js). The gate analyses test code
+   * too, so it is linted to the same correctness rules, as ES modules with
+   * Node's globals. */
+  {
+    files: ["tests/js/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: "module",
+      globals: {
+        console: "readonly", process: "readonly", setImmediate: "readonly",
+        URL: "readonly",
+      },
+    },
+    plugins: { local },
+    rules: {
+      "no-unused-vars": ["error", { caughtErrors: "all", argsIgnorePattern: "^_",
+                                    varsIgnorePattern: "^_" }],
+      "local/prefer-optional-chain": "error",
+      "local/no-nested-conditional": "error",
+      "no-nested-ternary": "error",
+      "eqeqeq": ["error", "smart"],
+      "no-var": "error",
+      "prefer-const": "error",
+      "no-undef": "error",
+      "no-empty": "error",
+    },
+  },
   {
     files: ["timeslides/report/assets/**/*.js"],
     languageOptions: {

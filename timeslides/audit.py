@@ -171,7 +171,16 @@ def request_fields(request) -> dict:
     email = request.headers.get("x-auth-request-email")
     if email:
         fields["user.email"] = safe(email, 200)
+    # The Logging stage asks every request line for the client's user agent.
+    # Always present, even when the client sent none, so a line missing it
+    # means a code path that bypassed this function rather than a quiet client.
+    fields["user_agent.original"] = safe(request.headers.get("user-agent") or "-", 300)
     return fields
+
+
+def outcome(status: int) -> str:
+    """event.outcome for a response: the standard's success or failure."""
+    return "success" if status < 400 else "failure"
 
 
 def event(action: str, **fields) -> None:

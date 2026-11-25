@@ -500,6 +500,34 @@ satisfy rather than the thing that produces it.
 
 ## Quality gate
 
+**1.10.0: JavaScript coverage, and a template risk taken knowingly.**
+FACT: the gate failed at 72.2% against 80% with every Python statement
+covered, and said why: "This upload contains JavaScript source (3 files) but
+no runnable test project. Those lines count as uncovered. Add a package.json
+with a test script and a lockfile, and the platform will run them
+automatically." FACT: a local SonarQube with the pipeline's apparent shape
+(no properties file, sources `.`, tests `tests`) read 80.5% for the same
+tree, so the platform counts JavaScript in a way the replica does not; the
+exact arithmetic was not reproduced and is not guessed at here.
+
+The fix measures the JavaScript rather than arguing about how it is counted.
+`package.json` declares no dependencies and one script, `node
+tests/js/run.mjs`, which ignores the `--coverage` the platform appends. The
+runner loads each asset into a fake page under its real filename, drives it
+with fixtures cut from pages the real builder renders, and writes LCOV to
+`coverage/lcov.info` from V8's own precise coverage, taken through Node's
+built-in inspector. FACT: with that LCOV the local SonarQube reads 99.4%
+overall; report.js 100%, picker.js 98.7%, eslint.config.mjs 100% of lines.
+
+INFERENCE, the risk: the platform picks its template from marker files, and
+`package.json` at the root is the node-react marker. The platform's own
+message asked for one on a python-template app, which suggests it handles
+the mixed case, but its live documentation was not reachable from the
+session that made the change. If an upload is re-detected as node-react, the
+remedy is to remove `package.json` and `package-lock.json`, which returns the
+JavaScript to uncovered.
+
+
 | Gate | Status |
 |---|---|
 | Coverage at or above 80 per cent | **100 per cent** of `timeslides`, 1,614 of 1,614 lines, in a report the scanner can resolve; see below |

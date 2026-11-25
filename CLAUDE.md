@@ -69,6 +69,16 @@ alone has already cost several more.
 ● Later stages judge the running image: **DAST** (no secrets, scans port 8080),
   **Logging** (stdout, the standard's JSON shape) and **Container Scan**.
   `tests/test_boot.py` runs the image's own CMD that way, locally.
+● **JavaScript with no runnable test project counts as wholly uncovered.**
+  1.10.0 failed the gate at 72.2% with every Python line covered, for that
+  reason alone. `package.json` (no dependencies) makes the platform run
+  `npm test -- --coverage`, which is `tests/js/run.mjs`: the assets loaded
+  into a fake page, V8's own coverage through the built-in inspector, LCOV to
+  `coverage/lcov.info`. Its fixtures are cut from pages the real builder
+  renders and `tests/test_js_suite.py` fails if they drift. A local SonarQube
+  with that LCOV reads 99.4%. Adding a `package.json` risks the platform
+  re-detecting the template as node-react; the platform itself asked for one,
+  and that risk is recorded in AUDIT.md under "Quality gate".
 ● **A failing test stage uploads no artefacts**, so the scan gets no coverage
   report and the gate reads 0.0%. A test that fails for an environmental reason
   therefore breaks the coverage gate. Structural checks use `repo_file()`, which
@@ -78,6 +88,7 @@ alone has already cost several more.
 
 ```bash
 .venv/bin/python -m pytest          # 100% of timeslides, no exceptions
+npm test                            # the JavaScript suite and coverage/lcov.info
 .venv/bin/ruff check .
 npx eslint .
 sh docker/appstore-sim.sh           # both passes: normal, and hostile ingest

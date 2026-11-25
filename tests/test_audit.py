@@ -178,15 +178,26 @@ class _Request:
 
 def test_a_request_carries_its_id_and_the_signed_in_email():
     fields = audit.request_fields(_Request({"X-Request-Id": "abc-123",
-                                            "X-Auth-Request-Email": "ash@example.org"}))
+                                            "X-Auth-Request-Email": "ash@example.org",
+                                            "User-Agent": "probe/1.0"}))
     assert fields == {"http.request.method": "GET", "url.path": "/api/runs",
                       "http.request.header.x-request-id": "abc-123",
-                      "user.email": "ash@example.org"}
+                      "user.email": "ash@example.org",
+                      "user_agent.original": "probe/1.0"}
 
 
 def test_a_request_without_those_headers_carries_neither():
+    """Neither id nor email; the user agent is always there, as "-" when the
+    client sent none, because the Logging stage requires the field."""
     assert audit.request_fields(_Request({})) == {
-        "http.request.method": "GET", "url.path": "/api/runs"}
+        "http.request.method": "GET", "url.path": "/api/runs",
+        "user_agent.original": "-"}
+
+
+@pytest.mark.parametrize(("status", "want"), [(200, "success"), (304, "success"),
+                                              (400, "failure"), (502, "failure")])
+def test_the_outcome_follows_the_status(status, want):
+    assert audit.outcome(status) == want
 
 
 def test_exception_info_is_included_when_logging_an_error(captured):
